@@ -1,0 +1,11 @@
+add_llvm_component_library(LLVMSAYACDisassembler
+ SAYACDisassembler.cpp
+ LINK_COMPONENTS
+ MC
+ MCDisassembler
+ Support
+ SAYACDesc
+ SAYACInfo
+ ADD_TO_COMPONENT
+ SAYAC
+  )
