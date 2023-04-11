@@ -28,7 +28,6 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
 #include "llvm/CodeGen/MachineDominators.h"
-#include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachinePostDominators.h"
@@ -73,17 +72,12 @@ ConvertRegReg("ppc-convert-rr-to-ri", cl::Hidden, cl::init(true),
 static cl::opt<bool>
     EnableSExtElimination("ppc-eliminate-signext",
                           cl::desc("enable elimination of sign-extensions"),
-                          cl::init(true), cl::Hidden);
+                          cl::init(false), cl::Hidden);
 
 static cl::opt<bool>
     EnableZExtElimination("ppc-eliminate-zeroext",
                           cl::desc("enable elimination of zero-extensions"),
-                          cl::init(true), cl::Hidden);
-
-static cl::opt<bool>
-    EnableTrapOptimization("ppc-opt-conditional-trap",
-                           cl::desc("enable optimization of conditional traps"),
-                           cl::init(false), cl::Hidden);
+                          cl::init(false), cl::Hidden);
 
 namespace {
 
@@ -108,10 +102,10 @@ private:
   void initialize(MachineFunction &MFParm);
 
   // Perform peepholes.
-  bool simplifyCode();
+  bool simplifyCode(void);
 
   // Perform peepholes.
-  bool eliminateRedundantCompare();
+  bool eliminateRedundantCompare(void);
   bool eliminateRedundantTOCSaves(std::map<MachineInstr *, bool> &TOCSaves);
   bool combineSEXTAndSHL(MachineInstr &MI, MachineInstr *&ToErase);
   bool emitRLDICWhenLoweringJumpTables(MachineInstr &MI);
@@ -172,10 +166,8 @@ static MachineInstr *getVRegDefOrNull(MachineOperand *Op,
 
 // This function returns number of known zero bits in output of MI
 // starting from the most significant bit.
-static unsigned getKnownLeadingZeroCount(const unsigned Reg,
-                                         const PPCInstrInfo *TII,
-                                         const MachineRegisterInfo *MRI) {
-  MachineInstr *MI = MRI->getVRegDef(Reg);
+static unsigned
+getKnownLeadingZeroCount(MachineInstr *MI, const PPCInstrInfo *TII) {
   unsigned Opcode = MI->getOpcode();
   if (Opcode == PPC::RLDICL || Opcode == PPC::RLDICL_rec ||
       Opcode == PPC::RLDCL || Opcode == PPC::RLDCL_rec)
@@ -219,7 +211,7 @@ static unsigned getKnownLeadingZeroCount(const unsigned Reg,
       Opcode == PPC::LBZU8 || Opcode == PPC::LBZUX8)
     return 56;
 
-  if (TII->isZeroExtended(Reg, MRI))
+  if (TII->isZeroExtended(*MI))
     return 32;
 
   return 0;
@@ -234,39 +226,37 @@ static unsigned getKnownLeadingZeroCount(const unsigned Reg,
 void PPCMIPeephole::UpdateTOCSaves(
   std::map<MachineInstr *, bool> &TOCSaves, MachineInstr *MI) {
   assert(TII->isTOCSaveMI(*MI) && "Expecting a TOC save instruction here");
-  // FIXME: Saving TOC in prologue hasn't been implemented well in AIX ABI part,
-  // here only support it under ELFv2.
-  if (MF->getSubtarget<PPCSubtarget>().isELFv2ABI()) {
-    PPCFunctionInfo *FI = MF->getInfo<PPCFunctionInfo>();
+  assert(MF->getSubtarget<PPCSubtarget>().isELFv2ABI() &&
+         "TOC-save removal only supported on ELFv2");
+  PPCFunctionInfo *FI = MF->getInfo<PPCFunctionInfo>();
 
-    MachineBasicBlock *Entry = &MF->front();
-    uint64_t CurrBlockFreq = MBFI->getBlockFreq(MI->getParent()).getFrequency();
+  MachineBasicBlock *Entry = &MF->front();
+  uint64_t CurrBlockFreq = MBFI->getBlockFreq(MI->getParent()).getFrequency();
 
-    // If the block in which the TOC save resides is in a block that
-    // post-dominates Entry, or a block that is hotter than entry (keep in mind
-    // that early MachineLICM has already run so the TOC save won't be hoisted)
-    // we can just do the save in the prologue.
-    if (CurrBlockFreq > EntryFreq || MPDT->dominates(MI->getParent(), Entry))
-      FI->setMustSaveTOC(true);
+  // If the block in which the TOC save resides is in a block that
+  // post-dominates Entry, or a block that is hotter than entry (keep in mind
+  // that early MachineLICM has already run so the TOC save won't be hoisted)
+  // we can just do the save in the prologue.
+  if (CurrBlockFreq > EntryFreq || MPDT->dominates(MI->getParent(), Entry))
+    FI->setMustSaveTOC(true);
 
-    // If we are saving the TOC in the prologue, all the TOC saves can be
-    // removed from the code.
-    if (FI->mustSaveTOC()) {
-      for (auto &TOCSave : TOCSaves)
-        TOCSave.second = false;
-      // Add new instruction to map.
-      TOCSaves[MI] = false;
-      return;
-    }
+  // If we are saving the TOC in the prologue, all the TOC saves can be removed
+  // from the code.
+  if (FI->mustSaveTOC()) {
+    for (auto &TOCSave : TOCSaves)
+      TOCSave.second = false;
+    // Add new instruction to map.
+    TOCSaves[MI] = false;
+    return;
   }
 
   bool Keep = true;
-  for (auto &I : TOCSaves) {
-    MachineInstr *CurrInst = I.first;
+  for (auto It = TOCSaves.begin(); It != TOCSaves.end(); It++ ) {
+    MachineInstr *CurrInst = It->first;
     // If new instruction dominates an existing one, mark existing one as
     // redundant.
-    if (I.second && MDT->dominates(MI, CurrInst))
-      I.second = false;
+    if (It->second && MDT->dominates(MI, CurrInst))
+      It->second = false;
     // Check if the new instruction is redundant.
     if (MDT->dominates(CurrInst, MI)) {
       Keep = false;
@@ -330,7 +320,8 @@ static void convertUnprimedAccPHIs(const PPCInstrInfo *TII,
                                    SmallVectorImpl<MachineInstr *> &PHIs,
                                    Register Dst) {
   DenseMap<MachineInstr *, MachineInstr *> ChangedPHIMap;
-  for (MachineInstr *PHI : llvm::reverse(PHIs)) {
+  for (auto It = PHIs.rbegin(), End = PHIs.rend(); It != End; ++It) {
+    MachineInstr *PHI = *It;
     SmallVector<std::pair<MachineOperand, MachineOperand>, 4> PHIOps;
     // We check if the current PHI node can be changed by looking at its
     // operands. If all the operands are either copies from primed
@@ -380,17 +371,12 @@ static void convertUnprimedAccPHIs(const PPCInstrInfo *TII,
     for (auto RegMBB : PHIOps)
       NewPHI.add(RegMBB.first).add(RegMBB.second);
     ChangedPHIMap[PHI] = NewPHI.getInstr();
-    LLVM_DEBUG(dbgs() << "Converting PHI: ");
-    LLVM_DEBUG(PHI->dump());
-    LLVM_DEBUG(dbgs() << "To: ");
-    LLVM_DEBUG(NewPHI.getInstr()->dump());
   }
 }
 
 // Perform peephole optimizations.
-bool PPCMIPeephole::simplifyCode() {
+bool PPCMIPeephole::simplifyCode(void) {
   bool Simplified = false;
-  bool TrapOpt = false;
   MachineInstr* ToErase = nullptr;
   std::map<MachineInstr *, bool> TOCSaves;
   const TargetRegisterInfo *TRI = &TII->getRegisterInfo();
@@ -429,17 +415,8 @@ bool PPCMIPeephole::simplifyCode() {
       // If the previous instruction was marked for elimination,
       // remove it now.
       if (ToErase) {
-        LLVM_DEBUG(dbgs() << "Deleting instruction: ");
-        LLVM_DEBUG(ToErase->dump());
         ToErase->eraseFromParent();
         ToErase = nullptr;
-      }
-      // If a conditional trap instruction got optimized to an
-      // unconditional trap, eliminate all the instructions after
-      // the trap.
-      if (EnableTrapOptimization && TrapOpt) {
-        ToErase = &MI;
-        continue;
       }
 
       // Ignore debug instructions.
@@ -490,7 +467,7 @@ bool PPCMIPeephole::simplifyCode() {
         // PPC::ZERO.
         if (!MI.getOperand(1).isImm() || MI.getOperand(1).getImm() != 0)
           break;
-        Register MIDestReg = MI.getOperand(0).getReg();
+        unsigned MIDestReg = MI.getOperand(0).getReg();
         for (MachineInstr& UseMI : MRI->use_instructions(MIDestReg))
           Simplified |= TII->onlyFoldImmediate(UseMI, MI, MIDestReg);
         if (MRI->use_nodbg_empty(MIDestReg)) {
@@ -499,12 +476,10 @@ bool PPCMIPeephole::simplifyCode() {
         }
         break;
       }
-      case PPC::STW:
       case PPC::STD: {
         MachineFrameInfo &MFI = MF->getFrameInfo();
         if (MFI.hasVarSizedObjects() ||
-            (!MF->getSubtarget<PPCSubtarget>().isELFv2ABI() &&
-             !MF->getSubtarget<PPCSubtarget>().isAIXABI()))
+            !MF->getSubtarget<PPCSubtarget>().isELFv2ABI())
           break;
         // When encountering a TOC save instruction, call UpdateTOCSaves
         // to add it to the TOCSaves map and mark any existing TOC saves
@@ -528,9 +503,9 @@ bool PPCMIPeephole::simplifyCode() {
         //   XXPERMDI t, SUBREG_TO_REG(s), SUBREG_TO_REG(s), immed.
         // We have to look through chains of COPY and SUBREG_TO_REG
         // to find the real source values for comparison.
-        Register TrueReg1 =
+        unsigned TrueReg1 =
           TRI->lookThruCopyLike(MI.getOperand(1).getReg(), MRI);
-        Register TrueReg2 =
+        unsigned TrueReg2 =
           TRI->lookThruCopyLike(MI.getOperand(2).getReg(), MRI);
 
         if (!(TrueReg1 == TrueReg2 && Register::isVirtualRegister(TrueReg1)))
@@ -550,7 +525,7 @@ bool PPCMIPeephole::simplifyCode() {
         auto isConversionOfLoadAndSplat = [=]() -> bool {
           if (DefOpc != PPC::XVCVDPSXDS && DefOpc != PPC::XVCVDPUXDS)
             return false;
-          Register FeedReg1 =
+          unsigned FeedReg1 =
             TRI->lookThruCopyLike(DefMI->getOperand(1).getReg(), MRI);
           if (Register::isVirtualRegister(FeedReg1)) {
             MachineInstr *LoadMI = MRI->getVRegDef(FeedReg1);
@@ -574,16 +549,16 @@ bool PPCMIPeephole::simplifyCode() {
         // If this is a splat or a swap fed by another splat, we
         // can replace it with a copy.
         if (DefOpc == PPC::XXPERMDI) {
-          Register DefReg1 = DefMI->getOperand(1).getReg();
-          Register DefReg2 = DefMI->getOperand(2).getReg();
+          unsigned DefReg1 = DefMI->getOperand(1).getReg();
+          unsigned DefReg2 = DefMI->getOperand(2).getReg();
           unsigned DefImmed = DefMI->getOperand(3).getImm();
 
           // If the two inputs are not the same register, check to see if
           // they originate from the same virtual register after only
           // copy-like instructions.
           if (DefReg1 != DefReg2) {
-            Register FeedReg1 = TRI->lookThruCopyLike(DefReg1, MRI);
-            Register FeedReg2 = TRI->lookThruCopyLike(DefReg2, MRI);
+            unsigned FeedReg1 = TRI->lookThruCopyLike(DefReg1, MRI);
+            unsigned FeedReg2 = TRI->lookThruCopyLike(DefReg2, MRI);
 
             if (!(FeedReg1 == FeedReg2 &&
                   Register::isVirtualRegister(FeedReg1)))
@@ -624,24 +599,14 @@ bool PPCMIPeephole::simplifyCode() {
             ToErase = &MI;
             Simplified = true;
           }
-        } else if ((Immed == 0 || Immed == 3 || Immed == 2) &&
-                   DefOpc == PPC::XXPERMDIs &&
+        } else if ((Immed == 0 || Immed == 3) && DefOpc == PPC::XXPERMDIs &&
                    (DefMI->getOperand(2).getImm() == 0 ||
                     DefMI->getOperand(2).getImm() == 3)) {
-          ToErase = &MI;
-          Simplified = true;
-          // Swap of a splat, convert to copy.
-          if (Immed == 2) {
-            LLVM_DEBUG(dbgs() << "Optimizing swap(splat) => copy(splat): ");
-            LLVM_DEBUG(MI.dump());
-            BuildMI(MBB, &MI, MI.getDebugLoc(), TII->get(PPC::COPY),
-                    MI.getOperand(0).getReg())
-                .add(MI.getOperand(1));
-            break;
-          }
           // Splat fed by another splat - switch the output of the first
           // and remove the second.
           DefMI->getOperand(0).setReg(MI.getOperand(0).getReg());
+          ToErase = &MI;
+          Simplified = true;
           LLVM_DEBUG(dbgs() << "Removing redundant splat: ");
           LLVM_DEBUG(MI.dump());
         }
@@ -652,7 +617,7 @@ bool PPCMIPeephole::simplifyCode() {
       case PPC::XXSPLTW: {
         unsigned MyOpcode = MI.getOpcode();
         unsigned OpNo = MyOpcode == PPC::XXSPLTW ? 1 : 2;
-        Register TrueReg =
+        unsigned TrueReg =
           TRI->lookThruCopyLike(MI.getOperand(OpNo).getReg(), MRI);
         if (!Register::isVirtualRegister(TrueReg))
           break;
@@ -695,8 +660,7 @@ bool PPCMIPeephole::simplifyCode() {
           Register ShiftOp1 = DefMI->getOperand(1).getReg();
           Register ShiftOp2 = DefMI->getOperand(2).getReg();
           unsigned ShiftImm = DefMI->getOperand(3).getImm();
-          unsigned SplatImm =
-              MI.getOperand(MyOpcode == PPC::XXSPLTW ? 2 : 1).getImm();
+          unsigned SplatImm = MI.getOperand(2).getImm();
           if (ShiftOp1 == ShiftOp2) {
             unsigned NewElem = (SplatImm + ShiftImm) & 0x3;
             if (MRI->hasOneNonDBGUse(ShiftRes)) {
@@ -716,7 +680,7 @@ bool PPCMIPeephole::simplifyCode() {
       }
       case PPC::XVCVDPSP: {
         // If this is a DP->SP conversion fed by an FRSP, the FRSP is redundant.
-        Register TrueReg =
+        unsigned TrueReg =
           TRI->lookThruCopyLike(MI.getOperand(1).getReg(), MRI);
         if (!Register::isVirtualRegister(TrueReg))
           break;
@@ -725,9 +689,9 @@ bool PPCMIPeephole::simplifyCode() {
         // This can occur when building a vector of single precision or integer
         // values.
         if (DefMI && DefMI->getOpcode() == PPC::XXPERMDI) {
-          Register DefsReg1 =
+          unsigned DefsReg1 =
             TRI->lookThruCopyLike(DefMI->getOperand(1).getReg(), MRI);
-          Register DefsReg2 =
+          unsigned DefsReg2 =
             TRI->lookThruCopyLike(DefMI->getOperand(2).getReg(), MRI);
           if (!Register::isVirtualRegister(DefsReg1) ||
               !Register::isVirtualRegister(DefsReg2))
@@ -784,28 +748,28 @@ bool PPCMIPeephole::simplifyCode() {
           break;
 
         MachineInstr *SrcMI = MRI->getVRegDef(NarrowReg);
-        unsigned SrcOpcode = SrcMI->getOpcode();
         // If we've used a zero-extending load that we will sign-extend,
         // just do a sign-extending load.
-        if (SrcOpcode == PPC::LHZ || SrcOpcode == PPC::LHZX) {
+        if (SrcMI->getOpcode() == PPC::LHZ ||
+            SrcMI->getOpcode() == PPC::LHZX) {
           if (!MRI->hasOneNonDBGUse(SrcMI->getOperand(0).getReg()))
             break;
-          // Determine the new opcode. We need to make sure that if the original
-          // instruction has a 64 bit opcode we keep using a 64 bit opcode.
-          // Likewise if the source is X-Form the new opcode should also be
-          // X-Form.
-          unsigned Opc = PPC::LHA;
-          bool SourceIsXForm = SrcOpcode == PPC::LHZX;
-          bool MIIs64Bit = MI.getOpcode() == PPC::EXTSH8 ||
-            MI.getOpcode() == PPC::EXTSH8_32_64;
-
-          if (SourceIsXForm && MIIs64Bit)
-            Opc = PPC::LHAX8;
-          else if (SourceIsXForm && !MIIs64Bit)
-            Opc = PPC::LHAX;
-          else if (MIIs64Bit)
-            Opc = PPC::LHA8;
-
+          auto is64Bit = [] (unsigned Opcode) {
+            return Opcode == PPC::EXTSH8;
+          };
+          auto isXForm = [] (unsigned Opcode) {
+            return Opcode == PPC::LHZX;
+          };
+          auto getSextLoadOp = [] (bool is64Bit, bool isXForm) {
+            if (is64Bit)
+              if (isXForm) return PPC::LHAX8;
+              else         return PPC::LHA8;
+            else
+              if (isXForm) return PPC::LHAX;
+              else         return PPC::LHA;
+          };
+          unsigned Opc = getSextLoadOp(is64Bit(MI.getOpcode()),
+                                       isXForm(SrcMI->getOpcode()));
           LLVM_DEBUG(dbgs() << "Zero-extending load\n");
           LLVM_DEBUG(SrcMI->dump());
           LLVM_DEBUG(dbgs() << "and sign-extension\n");
@@ -828,48 +792,28 @@ bool PPCMIPeephole::simplifyCode() {
           break;
 
         MachineInstr *SrcMI = MRI->getVRegDef(NarrowReg);
-        unsigned SrcOpcode = SrcMI->getOpcode();
         // If we've used a zero-extending load that we will sign-extend,
         // just do a sign-extending load.
-        if (SrcOpcode == PPC::LWZ || SrcOpcode == PPC::LWZX) {
+        if (SrcMI->getOpcode() == PPC::LWZ ||
+            SrcMI->getOpcode() == PPC::LWZX) {
           if (!MRI->hasOneNonDBGUse(SrcMI->getOperand(0).getReg()))
             break;
-
-          // The transformation from a zero-extending load to a sign-extending
-          // load is only legal when the displacement is a multiple of 4.
-          // If the displacement is not at least 4 byte aligned, don't perform
-          // the transformation.
-          bool IsWordAligned = false;
-          if (SrcMI->getOperand(1).isGlobal()) {
-            const GlobalObject *GO =
-                dyn_cast<GlobalObject>(SrcMI->getOperand(1).getGlobal());
-            if (GO && GO->getAlign() && *GO->getAlign() >= 4)
-              IsWordAligned = true;
-          } else if (SrcMI->getOperand(1).isImm()) {
-            int64_t Value = SrcMI->getOperand(1).getImm();
-            if (Value % 4 == 0)
-              IsWordAligned = true;
-          }
-
-          // Determine the new opcode. We need to make sure that if the original
-          // instruction has a 64 bit opcode we keep using a 64 bit opcode.
-          // Likewise if the source is X-Form the new opcode should also be
-          // X-Form.
-          unsigned Opc = PPC::LWA_32;
-          bool SourceIsXForm = SrcOpcode == PPC::LWZX;
-          bool MIIs64Bit = MI.getOpcode() == PPC::EXTSW ||
-            MI.getOpcode() == PPC::EXTSW_32_64;
-
-          if (SourceIsXForm && MIIs64Bit)
-            Opc = PPC::LWAX;
-          else if (SourceIsXForm && !MIIs64Bit)
-            Opc = PPC::LWAX_32;
-          else if (MIIs64Bit)
-            Opc = PPC::LWA;
-
-          if (!IsWordAligned && (Opc == PPC::LWA || Opc == PPC::LWA_32))
-            break;
-
+          auto is64Bit = [] (unsigned Opcode) {
+            return Opcode == PPC::EXTSW || Opcode == PPC::EXTSW_32_64;
+          };
+          auto isXForm = [] (unsigned Opcode) {
+            return Opcode == PPC::LWZX;
+          };
+          auto getSextLoadOp = [] (bool is64Bit, bool isXForm) {
+            if (is64Bit)
+              if (isXForm) return PPC::LWAX;
+              else         return PPC::LWA;
+            else
+              if (isXForm) return PPC::LWAX_32;
+              else         return PPC::LWA_32;
+          };
+          unsigned Opc = getSextLoadOp(is64Bit(MI.getOpcode()),
+                                       isXForm(SrcMI->getOpcode()));
           LLVM_DEBUG(dbgs() << "Zero-extending load\n");
           LLVM_DEBUG(SrcMI->dump());
           LLVM_DEBUG(dbgs() << "and sign-extension\n");
@@ -881,7 +825,7 @@ bool PPCMIPeephole::simplifyCode() {
           Simplified = true;
           NumEliminatedSExt++;
         } else if (MI.getOpcode() == PPC::EXTSW_32_64 &&
-                   TII->isSignExtended(NarrowReg, MRI)) {
+                   TII->isSignExtended(*SrcMI)) {
           // We can eliminate EXTSW if the input is known to be already
           // sign-extended.
           LLVM_DEBUG(dbgs() << "Removing redundant sign-extension\n");
@@ -932,11 +876,8 @@ bool PPCMIPeephole::simplifyCode() {
           if (Register::isVirtualRegister(CopyReg))
             SrcMI = MRI->getVRegDef(CopyReg);
         }
-        if (!SrcMI->getOperand(0).isReg())
-          break;
 
-        unsigned KnownZeroCount =
-            getKnownLeadingZeroCount(SrcMI->getOperand(0).getReg(), TII, MRI);
+        unsigned KnownZeroCount = getKnownLeadingZeroCount(SrcMI, TII);
         if (MI.getOperand(3).getImm() <= KnownZeroCount) {
           LLVM_DEBUG(dbgs() << "Removing redundant zero-extension\n");
           BuildMI(MBB, &MI, MI.getDebugLoc(), TII->get(PPC::COPY),
@@ -1017,7 +958,7 @@ bool PPCMIPeephole::simplifyCode() {
                   LiMI->getOpcode() == PPC::LI8) &&
                  "Invalid Opcode!");
           auto LiImm = LiMI->getOperand(1).getImm(); // save the imm of LI
-          LiMI->removeOperand(1);                    // remove the imm of LI
+          LiMI->RemoveOperand(1);                    // remove the imm of LI
           LiMI->setDesc(TII->get(LiMI->getOpcode() == PPC::LI ? PPC::ADDI
                                                               : PPC::ADDI8));
           MachineInstrBuilder(*LiMI->getParent()->getParent(), *LiMI)
@@ -1051,51 +992,6 @@ bool PPCMIPeephole::simplifyCode() {
           ++NumRotatesCollapsed;
         break;
       }
-      // We will replace TD/TW/TDI/TWI with an unconditional trap if it will
-      // always trap, we will delete the node if it will never trap.
-      case PPC::TDI:
-      case PPC::TWI:
-      case PPC::TD:
-      case PPC::TW: {
-        if (!EnableTrapOptimization) break;
-        MachineInstr *LiMI1 = getVRegDefOrNull(&MI.getOperand(1), MRI);
-        MachineInstr *LiMI2 = getVRegDefOrNull(&MI.getOperand(2), MRI);
-        bool IsOperand2Immediate = MI.getOperand(2).isImm();
-        // We can only do the optimization if we can get immediates
-        // from both operands
-        if (!(LiMI1 && (LiMI1->getOpcode() == PPC::LI ||
-                        LiMI1->getOpcode() == PPC::LI8)))
-          break;
-        if (!IsOperand2Immediate &&
-            !(LiMI2 && (LiMI2->getOpcode() == PPC::LI ||
-                        LiMI2->getOpcode() == PPC::LI8)))
-          break;
-
-        auto ImmOperand0 = MI.getOperand(0).getImm();
-        auto ImmOperand1 = LiMI1->getOperand(1).getImm();
-        auto ImmOperand2 = IsOperand2Immediate ? MI.getOperand(2).getImm()
-                                               : LiMI2->getOperand(1).getImm();
-
-        // We will replace the MI with an unconditional trap if it will always
-        // trap.
-        if ((ImmOperand0 == 31) ||
-            ((ImmOperand0 & 0x10) &&
-             ((int64_t)ImmOperand1 < (int64_t)ImmOperand2)) ||
-            ((ImmOperand0 & 0x8) &&
-             ((int64_t)ImmOperand1 > (int64_t)ImmOperand2)) ||
-            ((ImmOperand0 & 0x2) &&
-             ((uint64_t)ImmOperand1 < (uint64_t)ImmOperand2)) ||
-            ((ImmOperand0 & 0x1) &&
-             ((uint64_t)ImmOperand1 > (uint64_t)ImmOperand2)) ||
-            ((ImmOperand0 & 0x4) && (ImmOperand1 == ImmOperand2))) {
-          BuildMI(MBB, &MI, MI.getDebugLoc(), TII->get(PPC::TRAP));
-          TrapOpt = true;
-        }
-        // We will delete the MI if it will never trap.
-        ToErase = &MI;
-        Simplified = true;
-        break;
-      }
       }
     }
 
@@ -1105,9 +1001,6 @@ bool PPCMIPeephole::simplifyCode() {
       ToErase->eraseFromParent();
       ToErase = nullptr;
     }
-    // Reset TrapOpt to false at the end of the basic block.
-    if (EnableTrapOptimization)
-      TrapOpt = false;
   }
 
   // Eliminate all the TOC save instructions which are redundant.
@@ -1210,7 +1103,7 @@ static unsigned getIncomingRegForBlock(MachineInstr *Phi,
 static unsigned getSrcVReg(unsigned Reg, MachineBasicBlock *BB1,
                            MachineBasicBlock *BB2, MachineRegisterInfo *MRI) {
   unsigned SrcReg = Reg;
-  while (true) {
+  while (1) {
     unsigned NextReg = SrcReg;
     MachineInstr *Inst = MRI->getVRegDef(SrcReg);
     if (BB1 && Inst->getOpcode() == PPC::PHI && Inst->getParent() == BB2) {
@@ -1366,7 +1259,7 @@ bool PPCMIPeephole::eliminateRedundantTOCSaves(
 //   cmpwi  r3, 0       ; greather than -1 means greater or equal to 0
 //   bge    0, .LBB0_4
 
-bool PPCMIPeephole::eliminateRedundantCompare() {
+bool PPCMIPeephole::eliminateRedundantCompare(void) {
   bool Simplified = false;
 
   for (MachineBasicBlock &MBB2 : *MF) {
@@ -1410,7 +1303,7 @@ bool PPCMIPeephole::eliminateRedundantCompare() {
     bool IsPartiallyRedundant = (MBBtoMoveCmp != nullptr);
 
     // We cannot optimize an unsupported compare opcode or
-    // a mix of 32-bit and 64-bit comparisons
+    // a mix of 32-bit and 64-bit comaprisons
     if (!isSupportedCmpOp(CMPI1->getOpcode()) ||
         !isSupportedCmpOp(CMPI2->getOpcode()) ||
         is64bitCmpOp(CMPI1->getOpcode()) != is64bitCmpOp(CMPI2->getOpcode()))
@@ -1769,3 +1662,4 @@ INITIALIZE_PASS_END(PPCMIPeephole, DEBUG_TYPE,
 char PPCMIPeephole::ID = 0;
 FunctionPass*
 llvm::createPPCMIPeepholePass() { return new PPCMIPeephole(); }
+

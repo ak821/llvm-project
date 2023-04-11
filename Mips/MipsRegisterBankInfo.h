@@ -13,7 +13,7 @@
 #ifndef LLVM_LIB_TARGET_MIPS_MIPSREGISTERBANKINFO_H
 #define LLVM_LIB_TARGET_MIPS_MIPSREGISTERBANKINFO_H
 
-#include "llvm/CodeGen/RegisterBankInfo.h"
+#include "llvm/CodeGen/GlobalISel/RegisterBankInfo.h"
 
 #define GET_REGBANK_DECLARATIONS
 #include "MipsGenRegisterBank.inc"

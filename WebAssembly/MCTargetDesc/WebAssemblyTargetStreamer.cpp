@@ -13,8 +13,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "MCTargetDesc/WebAssemblyTargetStreamer.h"
+#include "MCTargetDesc/WebAssemblyInstPrinter.h"
 #include "MCTargetDesc/WebAssemblyMCTargetDesc.h"
-#include "Utils/WebAssemblyTypeUtilities.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCSectionWasm.h"
 #include "llvm/MC/MCSubtargetInfo.h"
@@ -58,6 +58,8 @@ void WebAssemblyTargetAsmStreamer::emitLocal(ArrayRef<wasm::ValType> Types) {
   }
 }
 
+void WebAssemblyTargetAsmStreamer::emitEndFunc() { OS << "\t.endfunc\n"; }
+
 void WebAssemblyTargetAsmStreamer::emitFunctionType(const MCSymbolWasm *Sym) {
   assert(Sym->isFunction());
   OS << "\t.functype\t" << Sym->getName() << " ";
@@ -77,21 +79,14 @@ void WebAssemblyTargetAsmStreamer::emitGlobalType(const MCSymbolWasm *Sym) {
 
 void WebAssemblyTargetAsmStreamer::emitTableType(const MCSymbolWasm *Sym) {
   assert(Sym->isTable());
-  const wasm::WasmTableType &Type = Sym->getTableType();
   OS << "\t.tabletype\t" << Sym->getName() << ", "
-     << WebAssembly::typeToString(static_cast<wasm::ValType>(Type.ElemType));
-  bool HasMaximum = Type.Limits.Flags & wasm::WASM_LIMITS_FLAG_HAS_MAX;
-  if (Type.Limits.Minimum != 0 || HasMaximum) {
-    OS << ", " << Type.Limits.Minimum;
-    if (HasMaximum)
-      OS << ", " << Type.Limits.Maximum;
-  }
+     << WebAssembly::typeToString(Sym->getTableType());
   OS << '\n';
 }
 
-void WebAssemblyTargetAsmStreamer::emitTagType(const MCSymbolWasm *Sym) {
-  assert(Sym->isTag());
-  OS << "\t.tagtype\t" << Sym->getName() << " ";
+void WebAssemblyTargetAsmStreamer::emitEventType(const MCSymbolWasm *Sym) {
+  assert(Sym->isEvent());
+  OS << "\t.eventtype\t" << Sym->getName() << " ";
   OS << WebAssembly::typeListToString(Sym->getSignature()->Params);
   OS << "\n";
 }
@@ -132,6 +127,10 @@ void WebAssemblyTargetWasmStreamer::emitLocal(ArrayRef<wasm::ValType> Types) {
     Streamer.emitULEB128IntValue(Pair.second);
     emitValueType(Pair.first);
   }
+}
+
+void WebAssemblyTargetWasmStreamer::emitEndFunc() {
+  llvm_unreachable(".end_func is not needed for direct wasm output");
 }
 
 void WebAssemblyTargetWasmStreamer::emitIndIdx(const MCExpr *Value) {

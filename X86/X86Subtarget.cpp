@@ -21,8 +21,6 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/CodeGen/GlobalISel/CallLowering.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
-#include "llvm/CodeGen/GlobalISel/InstructionSelector.h"
-#include "llvm/CodeGen/ScheduleDAGMutation.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/Function.h"
@@ -69,13 +67,6 @@ X86Subtarget::classifyGlobalReference(const GlobalValue *GV) const {
 
 unsigned char
 X86Subtarget::classifyLocalReference(const GlobalValue *GV) const {
-  // Tagged globals have non-zero upper bits, which makes direct references
-  // require a 64-bit immediate.  On the small code model this causes relocation
-  // errors, so we go through the GOT instead.
-  if (AllowTaggedGlobals && TM.getCodeModel() == CodeModel::Small && GV &&
-      !isa<Function>(GV))
-    return X86II::MO_GOTPCREL_NORELAX;
-
   // If we're not PIC, it's not very interesting.
   if (!isPositionIndependent())
     return X86II::MO_NO_FLAG;
@@ -137,7 +128,7 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
 
   // Absolute symbols can be referenced directly.
   if (GV) {
-    if (std::optional<ConstantRange> CR = GV->getAbsoluteSymbolRange()) {
+    if (Optional<ConstantRange> CR = GV->getAbsoluteSymbolRange()) {
       // See if we can use the 8-bit immediate form. Note that some instructions
       // will sign extend the immediate operand, so to be conservative we only
       // accept the range [0,128).
@@ -152,9 +143,6 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
     return classifyLocalReference(GV);
 
   if (isTargetCOFF()) {
-    // ExternalSymbolSDNode like _tls_index.
-    if (!GV)
-      return X86II::MO_NO_FLAG;
     if (GV->hasDLLImportStorageClass())
       return X86II::MO_DLLIMPORT;
     return X86II::MO_COFFSTUB;
@@ -169,11 +157,6 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
     // reference for them.
     if (TM.getCodeModel() == CodeModel::Large)
       return isTargetELF() ? X86II::MO_GOT : X86II::MO_NO_FLAG;
-    // Tagged globals have non-zero upper bits, which makes direct references
-    // require a 64-bit immediate. So we can't let the linker relax the
-    // relocation to a 32-bit RIP-relative direct reference.
-    if (AllowTaggedGlobals && GV && !isa<Function>(GV))
-      return X86II::MO_GOTPCREL_NORELAX;
     return X86II::MO_GOTPCREL;
   }
 
@@ -201,13 +184,10 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
   if (TM.shouldAssumeDSOLocal(M, GV))
     return X86II::MO_NO_FLAG;
 
-  // Functions on COFF can be non-DSO local for three reasons:
-  // - They are intrinsic functions (!GV)
+  // Functions on COFF can be non-DSO local for two reasons:
   // - They are marked dllimport
   // - They are extern_weak, and a stub is needed
   if (isTargetCOFF()) {
-    if (!GV)
-      return X86II::MO_NO_FLAG;
     if (GV->hasDLLImportStorageClass())
       return X86II::MO_DLLIMPORT;
     return X86II::MO_COFFSTUB;
@@ -249,7 +229,7 @@ bool X86Subtarget::isLegalToCallImmediateAddr() const {
   // FIXME: I386 PE/COFF supports PC relative calls using IMAGE_REL_I386_REL32
   // but WinCOFFObjectWriter::RecordRelocation cannot emit them.  Once it does,
   // the following check for Win32 should be removed.
-  if (Is64Bit || isTargetWin32())
+  if (In64BitMode || isTargetWin32())
     return false;
   return isTargetELF() || TM.getRelocationModel() == Reloc::Static;
 }
@@ -276,22 +256,22 @@ void X86Subtarget::initSubtargetFeatures(StringRef CPU, StringRef TuneCPU,
   // introduced with Intel's Nehalem/Silvermont and AMD's Family10h
   // micro-architectures respectively.
   if (hasSSE42() || hasSSE4A())
-    IsUnalignedMem16Slow = false;
+    IsUAMem16Slow = false;
 
   LLVM_DEBUG(dbgs() << "Subtarget features: SSELevel " << X86SSELevel
                     << ", 3DNowLevel " << X863DNowLevel << ", 64bit "
                     << HasX86_64 << "\n");
-  if (Is64Bit && !HasX86_64)
+  if (In64BitMode && !HasX86_64)
     report_fatal_error("64-bit code requested on a subtarget that doesn't "
                        "support it!");
 
-  // Stack alignment is 16 bytes on Darwin, Linux, kFreeBSD, NaCl, and for all
+  // Stack alignment is 16 bytes on Darwin, Linux, kFreeBSD and for all
   // 64-bit targets.  On Solaris (32-bit), stack alignment is 4 bytes
   // following the i386 psABI, while on Illumos it is always 16 bytes.
   if (StackAlignOverride)
     stackAlignment = *StackAlignOverride;
   else if (isTargetDarwin() || isTargetLinux() || isTargetKFreeBSD() ||
-           isTargetNaCl() || Is64Bit)
+           In64BitMode)
     stackAlignment = Align(16);
 
   // Consume the vector width attribute or apply any target specific limit.
@@ -359,7 +339,7 @@ const RegisterBankInfo *X86Subtarget::getRegBankInfo() const {
 }
 
 bool X86Subtarget::enableEarlyIfConversion() const {
-  return canUseCMOV() && X86EarlyIfConv;
+  return hasCMov() && X86EarlyIfConv;
 }
 
 void X86Subtarget::getPostRAMutations(

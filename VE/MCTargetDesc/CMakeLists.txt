@@ -12,7 +12,6 @@ add_llvm_component_library(LLVMVEDesc
   MC
   VEInfo
   Support
-  TargetParser
 
   ADD_TO_COMPONENT
   VE

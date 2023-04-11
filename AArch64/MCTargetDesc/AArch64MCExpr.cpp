@@ -17,7 +17,6 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbolELF.h"
 #include "llvm/MC/MCValue.h"
-#include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;

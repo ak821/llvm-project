@@ -20,11 +20,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "MCTargetDesc/WebAssemblyMCTargetDesc.h" // for WebAssembly::ARGUMENT_*
-#include "Utils/WebAssemblyUtilities.h"
 #include "WebAssembly.h"
 #include "WebAssemblyDebugValueManager.h"
 #include "WebAssemblyMachineFunctionInfo.h"
 #include "WebAssemblySubtarget.h"
+#include "WebAssemblyUtilities.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/CodeGen/LiveIntervals.h"
@@ -49,6 +49,7 @@ class WebAssemblyRegStackify final : public MachineFunctionPass {
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.setPreservesCFG();
+    AU.addRequired<AAResultsWrapperPass>();
     AU.addRequired<MachineDominatorTree>();
     AU.addRequired<LiveIntervals>();
     AU.addPreserved<MachineBlockFrequencyInfo>();
@@ -120,9 +121,14 @@ static void convertImplicitDefToConstZero(MachineInstr *MI,
         Type::getDoubleTy(MF.getFunction().getContext())));
     MI->addOperand(MachineOperand::CreateFPImm(Val));
   } else if (RegClass == &WebAssembly::V128RegClass) {
-    MI->setDesc(TII->get(WebAssembly::CONST_V128_I64x2));
-    MI->addOperand(MachineOperand::CreateImm(0));
-    MI->addOperand(MachineOperand::CreateImm(0));
+    // TODO: Replace this with v128.const 0 once that is supported in V8
+    Register TempReg = MRI.createVirtualRegister(&WebAssembly::I32RegClass);
+    MI->setDesc(TII->get(WebAssembly::SPLAT_I32x4));
+    MI->addOperand(MachineOperand::CreateReg(TempReg, false));
+    MachineInstr *Const = BuildMI(*MI->getParent(), MI, MI->getDebugLoc(),
+                                  TII->get(WebAssembly::CONST_I32), TempReg)
+                              .addImm(0);
+    LIS.InsertMachineInstrInMaps(*Const);
   } else {
     llvm_unreachable("Unexpected reg class");
   }
@@ -163,15 +169,15 @@ static void queryCallee(const MachineInstr &MI, bool &Read, bool &Write,
 
 // Determine whether MI reads memory, writes memory, has side effects,
 // and/or uses the stack pointer value.
-static void query(const MachineInstr &MI, bool &Read, bool &Write,
-                  bool &Effects, bool &StackPointer) {
+static void query(const MachineInstr &MI, AliasAnalysis &AA, bool &Read,
+                  bool &Write, bool &Effects, bool &StackPointer) {
   assert(!MI.isTerminator());
 
   if (MI.isDebugInstr() || MI.isPosition())
     return;
 
   // Check for loads.
-  if (MI.mayLoad() && !MI.isDereferenceableInvariantLoad())
+  if (MI.mayLoad() && !MI.isDereferenceableInvariantLoad(&AA))
     Read = true;
 
   // Check for stores.
@@ -254,9 +260,9 @@ static void query(const MachineInstr &MI, bool &Read, bool &Write,
 }
 
 // Test whether Def is safe and profitable to rematerialize.
-static bool shouldRematerialize(const MachineInstr &Def,
+static bool shouldRematerialize(const MachineInstr &Def, AliasAnalysis &AA,
                                 const WebAssemblyInstrInfo *TII) {
-  return Def.isAsCheapAsAMove() && TII->isTriviallyReMaterializable(Def);
+  return Def.isAsCheapAsAMove() && TII->isTriviallyReMaterializable(Def, &AA);
 }
 
 // Identify the definition for this register at this point. This is a
@@ -310,7 +316,7 @@ static bool hasOneUse(unsigned Reg, MachineInstr *Def, MachineRegisterInfo &MRI,
 // TODO: Compute memory dependencies in a way that uses AliasAnalysis to be
 // more precise.
 static bool isSafeToMove(const MachineOperand *Def, const MachineOperand *Use,
-                         const MachineInstr *Insert,
+                         const MachineInstr *Insert, AliasAnalysis &AA,
                          const WebAssemblyFunctionInfo &MFI,
                          const MachineRegisterInfo &MRI) {
   const MachineInstr *DefI = Def->getParent();
@@ -336,17 +342,12 @@ static bool isSafeToMove(const MachineOperand *Def, const MachineOperand *Use,
   // instruction in which the current value is used, we cannot
   // stackify. Stackifying in this case would require that def moving below the
   // current def in the stack, which cannot be achieved, even with locals.
-  // Also ensure we don't sink the def past any other prior uses.
   for (const auto &SubsequentDef : drop_begin(DefI->defs())) {
-    auto I = std::next(MachineBasicBlock::const_iterator(DefI));
-    auto E = std::next(MachineBasicBlock::const_iterator(UseI));
-    for (; I != E; ++I) {
-      for (const auto &PriorUse : I->uses()) {
-        if (&PriorUse == Use)
-          break;
-        if (PriorUse.isReg() && SubsequentDef.getReg() == PriorUse.getReg())
-          return false;
-      }
+    for (const auto &PriorUse : UseI->uses()) {
+      if (&PriorUse == Use)
+        break;
+      if (PriorUse.isReg() && SubsequentDef.getReg() == PriorUse.getReg())
+        return false;
     }
   }
 
@@ -395,7 +396,7 @@ static bool isSafeToMove(const MachineOperand *Def, const MachineOperand *Use,
   }
 
   bool Read = false, Write = false, Effects = false, StackPointer = false;
-  query(*DefI, Read, Write, Effects, StackPointer);
+  query(*DefI, AA, Read, Write, Effects, StackPointer);
 
   // If the instruction does not access memory and has no side effects, it has
   // no additional dependencies.
@@ -410,7 +411,7 @@ static bool isSafeToMove(const MachineOperand *Def, const MachineOperand *Use,
     bool InterveningWrite = false;
     bool InterveningEffects = false;
     bool InterveningStackPointer = false;
-    query(*I, InterveningRead, InterveningWrite, InterveningEffects,
+    query(*I, AA, InterveningRead, InterveningWrite, InterveningEffects,
           InterveningStackPointer);
     if (Effects && InterveningEffects)
       return false;
@@ -501,10 +502,6 @@ static unsigned getTeeOpcode(const TargetRegisterClass *RC) {
     return WebAssembly::TEE_F64;
   if (RC == &WebAssembly::V128RegClass)
     return WebAssembly::TEE_V128;
-  if (RC == &WebAssembly::EXTERNREFRegClass)
-    return WebAssembly::TEE_EXTERNREF;
-  if (RC == &WebAssembly::FUNCREFRegClass)
-    return WebAssembly::TEE_FUNCREF;
   llvm_unreachable("Unexpected register class");
 }
 
@@ -812,6 +809,7 @@ bool WebAssemblyRegStackify::runOnMachineFunction(MachineFunction &MF) {
   WebAssemblyFunctionInfo &MFI = *MF.getInfo<WebAssemblyFunctionInfo>();
   const auto *TII = MF.getSubtarget<WebAssemblySubtarget>().getInstrInfo();
   const auto *TRI = MF.getSubtarget<WebAssemblySubtarget>().getRegisterInfo();
+  AliasAnalysis &AA = getAnalysis<AAResultsWrapperPass>().getAAResults();
   auto &MDT = getAnalysis<MachineDominatorTree>();
   auto &LIS = getAnalysis<LiveIntervals>();
 
@@ -875,7 +873,8 @@ bool WebAssemblyRegStackify::runOnMachineFunction(MachineFunction &MF) {
         // supports intra-block moves) and it's MachineSink's job to catch all
         // the sinking opportunities anyway.
         bool SameBlock = DefI->getParent() == &MBB;
-        bool CanMove = SameBlock && isSafeToMove(Def, &Use, Insert, MFI, MRI) &&
+        bool CanMove = SameBlock &&
+                       isSafeToMove(Def, &Use, Insert, AA, MFI, MRI) &&
                        !TreeWalker.isOnStack(Reg);
         if (CanMove && hasOneUse(Reg, DefI, MRI, MDT, LIS)) {
           Insert = moveForSingleUse(Reg, Use, DefI, MBB, Insert, LIS, MFI, MRI);
@@ -885,7 +884,7 @@ bool WebAssemblyRegStackify::runOnMachineFunction(MachineFunction &MF) {
           // TODO: Encode this properly as a stackified value.
           if (MFI.isFrameBaseVirtual() && MFI.getFrameBaseVreg() == Reg)
             MFI.clearFrameBaseVreg();
-        } else if (shouldRematerialize(*DefI, TII)) {
+        } else if (shouldRematerialize(*DefI, AA, TII)) {
           Insert =
               rematerializeCheapDef(Reg, Use, *DefI, MBB, Insert->getIterator(),
                                     LIS, MFI, MRI, TII, TRI);
@@ -911,8 +910,8 @@ bool WebAssemblyRegStackify::runOnMachineFunction(MachineFunction &MF) {
                SubsequentUse != Use.getParent()->uses().end()) {
           if (!SubsequentDef->isReg() || !SubsequentUse->isReg())
             break;
-          Register DefReg = SubsequentDef->getReg();
-          Register UseReg = SubsequentUse->getReg();
+          unsigned DefReg = SubsequentDef->getReg();
+          unsigned UseReg = SubsequentUse->getReg();
           // TODO: This single-use restriction could be relaxed by using tees
           if (DefReg != UseReg || !MRI.hasOneUse(DefReg))
             break;

@@ -73,7 +73,8 @@ RegisterBankInfo::ValueMapping ValueMappings[] = {
 
 using namespace llvm;
 
-MipsRegisterBankInfo::MipsRegisterBankInfo(const TargetRegisterInfo &TRI) {}
+MipsRegisterBankInfo::MipsRegisterBankInfo(const TargetRegisterInfo &TRI)
+    : MipsGenRegisterBankInfo() {}
 
 const RegisterBank &
 MipsRegisterBankInfo::getRegBankFromRegClass(const TargetRegisterClass &RC,
@@ -153,7 +154,8 @@ static bool isGprbTwoInstrUnalignedLoadOrStore(const MachineInstr *MI) {
   if (MI->getOpcode() == TargetOpcode::G_LOAD ||
       MI->getOpcode() == TargetOpcode::G_STORE) {
     auto MMO = *MI->memoperands_begin();
-    const MipsSubtarget &STI = MI->getMF()->getSubtarget<MipsSubtarget>();
+    const MipsSubtarget &STI =
+        static_cast<const MipsSubtarget &>(MI->getMF()->getSubtarget());
     if (MMO->getSize() == 4 && (!STI.systemSupportsUnalignedAccess() &&
                                 MMO->getAlign() < MMO->getSize()))
       return true;
@@ -397,7 +399,7 @@ void MipsRegisterBankInfo::TypeInfoForMF::cleanupIfNewFunction(
 
 static const MipsRegisterBankInfo::ValueMapping *
 getMSAMapping(const MachineFunction &MF) {
-  assert(MF.getSubtarget<MipsSubtarget>().hasMSA() &&
+  assert(static_cast<const MipsSubtarget &>(MF.getSubtarget()).hasMSA() &&
          "MSA mapping not available on target without MSA.");
   return &Mips::ValueMappings[Mips::MSAIdx];
 }
@@ -714,11 +716,10 @@ void MipsRegisterBankInfo::setRegBank(MachineInstr &MI,
 
 static void
 combineAwayG_UNMERGE_VALUES(LegalizationArtifactCombiner &ArtCombiner,
-                            GUnmerge &MI, GISelChangeObserver &Observer) {
+                            MachineInstr &MI, GISelChangeObserver &Observer) {
   SmallVector<Register, 4> UpdatedDefs;
   SmallVector<MachineInstr *, 2> DeadInstrs;
-  ArtCombiner.tryCombineUnmergeValues(MI, DeadInstrs,
-                                      UpdatedDefs, Observer);
+  ArtCombiner.tryCombineUnmergeValues(MI, DeadInstrs, UpdatedDefs, Observer);
   for (MachineInstr *DeadMI : DeadInstrs)
     DeadMI->eraseFromParent();
 }
@@ -749,8 +750,8 @@ void MipsRegisterBankInfo::applyMappingImpl(
       // This is new G_UNMERGE that was created during narrowScalar and will
       // not be considered for regbank selection. RegBankSelect for mips
       // visits/makes corresponding G_MERGE first. Combine them here.
-      if (auto *Unmerge = dyn_cast<GUnmerge>(NewMI))
-        combineAwayG_UNMERGE_VALUES(ArtCombiner, *Unmerge, NewInstrObserver);
+      if (NewMI->getOpcode() == TargetOpcode::G_UNMERGE_VALUES)
+        combineAwayG_UNMERGE_VALUES(ArtCombiner, *NewMI, NewInstrObserver);
       // This G_MERGE will be combined away when its corresponding G_UNMERGE
       // gets regBankSelected.
       else if (NewMI->getOpcode() == TargetOpcode::G_MERGE_VALUES)
@@ -762,8 +763,7 @@ void MipsRegisterBankInfo::applyMappingImpl(
     return;
   }
   case TargetOpcode::G_UNMERGE_VALUES:
-    combineAwayG_UNMERGE_VALUES(ArtCombiner, cast<GUnmerge>(MI),
-                                NewInstrObserver);
+    combineAwayG_UNMERGE_VALUES(ArtCombiner, MI, NewInstrObserver);
     return;
   default:
     break;

@@ -9,7 +9,7 @@
 /// \file
 /// \brief This pass propagates attributes from kernels to the non-entry
 /// functions. Most of the library functions were not compiled for specific ABI,
-/// yet will be correctly compiled if proper attributes are propagated from the
+/// yet will be correctly compiled if proper attrbutes are propagated from the
 /// caller.
 ///
 /// The pass analyzes call graph and propagates ABI target features through the
@@ -17,7 +17,7 @@
 ///
 /// It can run in two modes: as a function or module pass. A function pass
 /// simply propagates attributes. A module pass clones functions if there are
-/// callers with different ABI. If a function is cloned all call sites will
+/// callers with different ABI. If a function is clonned all call sites will
 /// be updated to use a correct clone.
 ///
 /// A function pass is limited in functionality but can run early in the
@@ -55,9 +55,13 @@ static constexpr const FeatureBitset TargetFeatures = {
 
 // Attributes to propagate.
 // TODO: Support conservative min/max merging instead of cloning.
-static constexpr const char *AttributeNames[] = {"amdgpu-waves-per-eu"};
+static constexpr const char* AttributeNames[] = {
+  "amdgpu-waves-per-eu",
+  "amdgpu-flat-work-group-size"
+};
 
-static constexpr unsigned NumAttr = std::size(AttributeNames);
+static constexpr unsigned NumAttr =
+  sizeof(AttributeNames) / sizeof(AttributeNames[0]);
 
 class AMDGPUPropagateAttributes {
 
@@ -91,7 +95,7 @@ class AMDGPUPropagateAttributes {
     }
 
     FeatureBitset Features;
-    std::optional<Attribute> Attributes[NumAttr];
+    Optional<Attribute> Attributes[NumAttr];
   };
 
   class Clone {
@@ -127,8 +131,7 @@ class AMDGPUPropagateAttributes {
   void setFeatures(Function &F, const FeatureBitset &NewFeatures);
 
   // Set new function's attributes in place.
-  void setAttributes(Function &F,
-                     const ArrayRef<std::optional<Attribute>> NewAttrs);
+  void setAttributes(Function &F, const ArrayRef<Optional<Attribute>> NewAttrs);
 
   std::string getFeatureString(const FeatureBitset &Features) const;
 
@@ -146,7 +149,7 @@ public:
   bool process(Module &M);
 };
 
-// Allows to propagate attributes early, but no cloning is allowed as it must
+// Allows to propagate attributes early, but no clonning is allowed as it must
 // be a function pass to run before any optimizations.
 // TODO: We shall only need a one instance of module pass, but that needs to be
 // in the linker pipeline which is currently not possible.
@@ -165,7 +168,7 @@ public:
   bool runOnFunction(Function &F) override;
 };
 
-// Allows to propagate attributes with cloning but does that late in the
+// Allows to propagate attributes with clonning but does that late in the
 // pipeline.
 class AMDGPUPropagateAttributesLate : public ModulePass {
   const TargetMachine *TM;
@@ -209,10 +212,10 @@ AMDGPUPropagateAttributes::findFunction(const FnProperties &PropsNeeded,
 
 bool AMDGPUPropagateAttributes::process(Module &M) {
   for (auto &F : M.functions())
-    if (AMDGPU::isKernel(F.getCallingConv()))
+    if (AMDGPU::isEntryFunctionCC(F.getCallingConv()))
       Roots.insert(&F);
 
-  return Roots.empty() ? false : process();
+  return process();
 }
 
 bool AMDGPUPropagateAttributes::process(Function &F) {
@@ -225,7 +228,8 @@ bool AMDGPUPropagateAttributes::process() {
   SmallSet<Function *, 32> NewRoots;
   SmallSet<Function *, 32> Replaced;
 
-  assert(!Roots.empty());
+  if (Roots.empty())
+    return false;
   Module &M = *(*Roots.begin())->getParent();
 
   do {
@@ -245,11 +249,7 @@ bool AMDGPUPropagateAttributes::process() {
         if (!I)
           continue;
         CallBase *CI = dyn_cast<CallBase>(I);
-        // Only propagate attributes if F is the called function. Specifically,
-        // do not propagate attributes if F is passed as an argument.
-        // FIXME: handle bitcasted callee, e.g.
-        // %retval = call i8* bitcast (i32* ()* @f to i8* ()*)()
-        if (!CI || CI->getCalledOperand() != &F)
+        if (!CI)
           continue;
         Function *Caller = CI->getCaller();
         if (!Caller || !Visited.insert(CI).second)
@@ -269,7 +269,7 @@ bool AMDGPUPropagateAttributes::process() {
         if (!NewF) {
           const FnProperties NewProps = CalleeProps.adjustToCaller(CallerProps);
           if (!AllowClone) {
-            // This may set different features on different iterations if
+            // This may set different features on different iteartions if
             // there is a contradiction in callers' attributes. In this case
             // we rely on a second pass running on Module, which is allowed
             // to clone.
@@ -285,7 +285,7 @@ bool AMDGPUPropagateAttributes::process() {
           NewRoots.insert(NewF);
         }
 
-        ToReplace.push_back(std::pair(CI, NewF));
+        ToReplace.push_back(std::make_pair(CI, NewF));
         Replaced.insert(&F);
 
         Changed = true;
@@ -344,8 +344,8 @@ void AMDGPUPropagateAttributes::setFeatures(Function &F,
   F.addFnAttr("target-features", NewFeatureStr);
 }
 
-void AMDGPUPropagateAttributes::setAttributes(
-    Function &F, const ArrayRef<std::optional<Attribute>> NewAttrs) {
+void AMDGPUPropagateAttributes::setAttributes(Function &F,
+    const ArrayRef<Optional<Attribute>> NewAttrs) {
   LLVM_DEBUG(dbgs() << "Set attributes on " << F.getName() << ":\n");
   for (unsigned I = 0; I < NumAttr; ++I) {
     F.removeFnAttr(AttributeNames[I]);
@@ -379,7 +379,7 @@ bool AMDGPUPropagateAttributesEarly::runOnFunction(Function &F) {
     TM = &TPC->getTM<TargetMachine>();
   }
 
-  if (!AMDGPU::isKernel(F.getCallingConv()))
+  if (!AMDGPU::isEntryFunctionCC(F.getCallingConv()))
     return false;
 
   return AMDGPUPropagateAttributes(TM, false).process(F);

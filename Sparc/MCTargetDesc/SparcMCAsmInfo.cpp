@@ -40,6 +40,7 @@ SparcELFMCAsmInfo::SparcELFMCAsmInfo(const Triple &TheTriple) {
 
   ExceptionsType = ExceptionHandling::DwarfCFI;
 
+  SunStyleELFSectionSwitchSyntax = true;
   UsesELFSectionDirectiveForBSS = true;
 }
 

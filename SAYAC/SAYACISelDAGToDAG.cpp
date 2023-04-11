@@ -51,6 +51,8 @@ public:
     return "SAYAC DAG->DAG Pattern Instruction Selection";
   }
 
+  bool SelectAddr(SDValue Addr, SDValue &Base, SDValue &Offset);
+
   // Override SelectionDAGISel.
   void Select(SDNode *Node) override;
 /*
@@ -70,9 +72,30 @@ FunctionPass *llvm::createSAYACISelDag(SAYACTargetMachine &TM,
   return new SAYACDAGToDAGISel(TM, OptLevel);
 }
 
+bool SAYACDAGToDAGISel::SelectAddr(SDValue Addr, SDValue &Base, SDValue &Offset) {
+  if (FrameIndexSDNode *FIN = dyn_cast<FrameIndexSDNode>(Addr)) {
+    EVT PtrVT = getTargetLowering()->getPointerTy(CurDAG->getDataLayout());
+    Base = CurDAG->getTargetFrameIndex(FIN->getIndex(), PtrVT);
+    Offset = CurDAG->getTargetConstant(0, Addr, MVT::i32);
+    return true;
+  }
+  if (Addr.getOpcode() == ISD::TargetExternalSymbol ||
+      Addr.getOpcode() == ISD::TargetGlobalAddress ||
+      Addr.getOpcode() == ISD::TargetGlobalTLSAddress) {
+    return false; // direct calls.
+  }
+
+  Base = Addr;
+  Offset = CurDAG->getTargetConstant(0, Addr, MVT::i32);
+  return true;
+}
+
+
 void SAYACDAGToDAGISel::Select(SDNode *Node) {
   // Instruction Selection not handled by the auto-generated tablegen selection
   // should be handled here.
+
+  // dbgs() << (ISD::STORE) << '\n';
 
   // Select the default instruction.
   SelectCode(Node);

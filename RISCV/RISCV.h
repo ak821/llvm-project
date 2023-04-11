@@ -18,6 +18,9 @@
 #include "llvm/Target/TargetMachine.h"
 
 namespace llvm {
+class RISCVRegisterBankInfo;
+class RISCVSubtarget;
+class RISCVTargetMachine;
 class AsmPrinter;
 class FunctionPass;
 class InstructionSelector;
@@ -26,32 +29,13 @@ class MCOperand;
 class MachineInstr;
 class MachineOperand;
 class PassRegistry;
-class RISCVRegisterBankInfo;
-class RISCVSubtarget;
-class RISCVTargetMachine;
 
-FunctionPass *createRISCVCodeGenPreparePass();
-void initializeRISCVCodeGenPreparePass(PassRegistry &);
-
-bool lowerRISCVMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
-                                    AsmPrinter &AP);
-bool lowerRISCVMachineOperandToMCOperand(const MachineOperand &MO,
+void LowerRISCVMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
+                                    const AsmPrinter &AP);
+bool LowerRISCVMachineOperandToMCOperand(const MachineOperand &MO,
                                          MCOperand &MCOp, const AsmPrinter &AP);
 
-FunctionPass *createRISCVISelDag(RISCVTargetMachine &TM,
-                                 CodeGenOpt::Level OptLevel);
-
-FunctionPass *createRISCVMakeCompressibleOptPass();
-void initializeRISCVMakeCompressibleOptPass(PassRegistry &);
-
-FunctionPass *createRISCVGatherScatterLoweringPass();
-void initializeRISCVGatherScatterLoweringPass(PassRegistry &);
-
-FunctionPass *createRISCVSExtWRemovalPass();
-void initializeRISCVSExtWRemovalPass(PassRegistry &);
-
-FunctionPass *createRISCVStripWSuffixPass();
-void initializeRISCVStripWSuffixPass(PassRegistry &);
+FunctionPass *createRISCVISelDag(RISCVTargetMachine &TM);
 
 FunctionPass *createRISCVMergeBaseOffsetOptPass();
 void initializeRISCVMergeBaseOffsetOptPass(PassRegistry &);
@@ -59,22 +43,15 @@ void initializeRISCVMergeBaseOffsetOptPass(PassRegistry &);
 FunctionPass *createRISCVExpandPseudoPass();
 void initializeRISCVExpandPseudoPass(PassRegistry &);
 
-FunctionPass *createRISCVPreRAExpandPseudoPass();
-void initializeRISCVPreRAExpandPseudoPass(PassRegistry &);
-
 FunctionPass *createRISCVExpandAtomicPseudoPass();
 void initializeRISCVExpandAtomicPseudoPass(PassRegistry &);
 
-FunctionPass *createRISCVInsertVSETVLIPass();
-void initializeRISCVInsertVSETVLIPass(PassRegistry &);
-
-FunctionPass *createRISCVRedundantCopyEliminationPass();
-void initializeRISCVRedundantCopyEliminationPass(PassRegistry &);
+FunctionPass *createRISCVCleanupVSETVLIPass();
+void initializeRISCVCleanupVSETVLIPass(PassRegistry &);
 
 InstructionSelector *createRISCVInstructionSelector(const RISCVTargetMachine &,
                                                     RISCVSubtarget &,
                                                     RISCVRegisterBankInfo &);
-void initializeRISCVDAGToDAGISelPass(PassRegistry &);
-} // namespace llvm
+}
 
 #endif

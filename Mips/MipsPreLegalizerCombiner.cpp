@@ -16,7 +16,6 @@
 #include "llvm/CodeGen/GlobalISel/CombinerHelper.h"
 #include "llvm/CodeGen/GlobalISel/CombinerInfo.h"
 #include "llvm/CodeGen/GlobalISel/MIPatternMatch.h"
-#include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/InitializePasses.h"
 
@@ -31,27 +30,26 @@ public:
       : CombinerInfo(/*AllowIllegalOps*/ true, /*ShouldLegalizeIllegal*/ false,
                      /*LegalizerInfo*/ nullptr, /*EnableOpt*/ false,
                      /*EnableOptSize*/ false, /*EnableMinSize*/ false) {}
-  bool combine(GISelChangeObserver &Observer, MachineInstr &MI,
-               MachineIRBuilder &B) const override;
+  virtual bool combine(GISelChangeObserver &Observer, MachineInstr &MI,
+                       MachineIRBuilder &B) const override;
 };
 
 bool MipsPreLegalizerCombinerInfo::combine(GISelChangeObserver &Observer,
                                            MachineInstr &MI,
                                            MachineIRBuilder &B) const {
-  CombinerHelper Helper(Observer, B, /*IsPreLegalize*/ true);
+  CombinerHelper Helper(Observer, B);
 
   switch (MI.getOpcode()) {
   default:
     return false;
-  case TargetOpcode::G_MEMCPY_INLINE:
-    return Helper.tryEmitMemcpyInline(MI);
   case TargetOpcode::G_LOAD:
   case TargetOpcode::G_SEXTLOAD:
   case TargetOpcode::G_ZEXTLOAD: {
     // Don't attempt to combine non power of 2 loads or unaligned loads when
     // subtarget doesn't support them.
     auto MMO = *MI.memoperands_begin();
-    const MipsSubtarget &STI = MI.getMF()->getSubtarget<MipsSubtarget>();
+    const MipsSubtarget &STI =
+        static_cast<const MipsSubtarget &>(MI.getMF()->getSubtarget());
     if (!isPowerOf2_64(MMO->getSize()))
       return false;
     bool isUnaligned = MMO->getAlign() < MMO->getSize();

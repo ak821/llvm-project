@@ -158,10 +158,7 @@ void PPCInstPrinter::printInst(const MCInst *MI, uint64_t Address,
   //    dcbt ra, rb, th [server]
   //    dcbt th, ra, rb [embedded]
   //  where th can be omitted when it is 0. dcbtst is the same.
-  // On AIX, only emit the extended mnemonics for dcbt and dcbtst if
-  // the "modern assembler" is available.
-  if ((MI->getOpcode() == PPC::DCBT || MI->getOpcode() == PPC::DCBTST) &&
-      (!TT.isOSAIX() || STI.getFeatureBits()[PPC::FeatureModernAIXAs])) {
+  if (MI->getOpcode() == PPC::DCBT || MI->getOpcode() == PPC::DCBTST) {
     unsigned char TH = MI->getOperand(0).getImm();
     O << "\tdcbt";
     if (MI->getOpcode() == PPC::DCBTST)
@@ -517,15 +514,6 @@ void PPCInstPrinter::printMemRegImm(const MCInst *MI, unsigned OpNo,
   O << ')';
 }
 
-void PPCInstPrinter::printMemRegImmHash(const MCInst *MI, unsigned OpNo,
-                                        const MCSubtargetInfo &STI,
-                                        raw_ostream &O) {
-  O << MI->getOperand(OpNo).getImm();
-  O << '(';
-  printOperand(MI, OpNo + 1, STI, O);
-  O << ')';
-}
-
 void PPCInstPrinter::printMemRegImm34PCRel(const MCInst *MI, unsigned OpNo,
                                            const MCSubtargetInfo &STI,
                                            raw_ostream &O) {
@@ -631,6 +619,8 @@ const char *PPCInstPrinter::getVerboseConditionRegName(unsigned RegNum,
 // showRegistersWithPrefix - This method determines whether registers
 // should be number-only or include the prefix.
 bool PPCInstPrinter::showRegistersWithPrefix() const {
+  if (TT.getOS() == Triple::AIX)
+    return false;
   return FullRegNamesWithPercent || FullRegNames;
 }
 

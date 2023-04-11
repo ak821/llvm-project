@@ -298,7 +298,6 @@ let isAsCheapAsAMove = 1 in {
 }
   defm MUL : ALU<BPF_MUL, "*=", mul>;
   defm DIV : ALU<BPF_DIV, "/=", udiv>;
-  defm MOD : ALU<BPF_MOD, "%=", urem>;
 }
 
 class NEG_RR<BPFOpClass Class, BPFArithOp Opc,
@@ -373,7 +372,6 @@ def FI_ri
   let Inst{47-32} = 0;
   let Inst{31-0} = 0;
   let BPFClass = BPF_LD;
-  bit isPseudo = true;
 }
 
 def LD_pseudo

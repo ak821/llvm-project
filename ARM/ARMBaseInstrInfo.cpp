@@ -25,7 +25,6 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Triple.h"
-#include "llvm/CodeGen/DFAPacketizer.h"
 #include "llvm/CodeGen/LiveVariables.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
@@ -36,7 +35,6 @@
 #include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
-#include "llvm/CodeGen/MachinePipeliner.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/MachineScheduler.h"
 #include "llvm/CodeGen/MultiHazardRecognizer.h"
@@ -115,7 +113,7 @@ static const ARM_MLxEntry ARM_MLxTable[] = {
 ARMBaseInstrInfo::ARMBaseInstrInfo(const ARMSubtarget& STI)
   : ARMGenInstrInfo(ARM::ADJCALLSTACKDOWN, ARM::ADJCALLSTACKUP),
     Subtarget(STI) {
-  for (unsigned i = 0, e = std::size(ARM_MLxTable); i != e; ++i) {
+  for (unsigned i = 0, e = array_lengthof(ARM_MLxTable); i != e; ++i) {
     if (!MLxEntryMap.insert(std::make_pair(ARM_MLxTable[i].MLxOpc, i)).second)
       llvm_unreachable("Duplicated entries?");
     MLxHazardOpcodes.insert(ARM_MLxTable[i].AddSubOpc);
@@ -175,9 +173,8 @@ CreateTargetPostRAHazardRecognizer(const InstrItineraryData *II,
   return MHR;
 }
 
-MachineInstr *
-ARMBaseInstrInfo::convertToThreeAddress(MachineInstr &MI, LiveVariables *LV,
-                                        LiveIntervals *LIS) const {
+MachineInstr *ARMBaseInstrInfo::convertToThreeAddress(
+    MachineFunction::iterator &MFI, MachineInstr &MI, LiveVariables *LV) const {
   // FIXME: Thumb2 support.
 
   if (!EnableARM3Addr)
@@ -312,7 +309,8 @@ ARMBaseInstrInfo::convertToThreeAddress(MachineInstr &MI, LiveVariables *LV,
 
   // Transfer LiveVariables states, kill / dead info.
   if (LV) {
-    for (const MachineOperand &MO : MI.operands()) {
+    for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
+      MachineOperand &MO = MI.getOperand(i);
       if (MO.isReg() && Register::isVirtualRegister(MO.getReg())) {
         Register Reg = MO.getReg();
 
@@ -338,20 +336,13 @@ ARMBaseInstrInfo::convertToThreeAddress(MachineInstr &MI, LiveVariables *LV,
     }
   }
 
-  MachineBasicBlock &MBB = *MI.getParent();
-  MBB.insert(MI, NewMIs[1]);
-  MBB.insert(MI, NewMIs[0]);
+  MachineBasicBlock::iterator MBBI = MI.getIterator();
+  MFI->insert(MBBI, NewMIs[1]);
+  MFI->insert(MBBI, NewMIs[0]);
   return NewMIs[0];
 }
 
 // Branch analysis.
-// Cond vector output format:
-//   0 elements indicates an unconditional branch
-//   2 elements indicates a conditional branch; the elements are
-//     the condition to check and the CPSR.
-//   3 elements indicates a hardware loop end; the elements
-//     are the opcode, the operand value to test, and a dummy
-//     operand used to pad out to 3 operands.
 bool ARMBaseInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
                                      MachineBasicBlock *&TBB,
                                      MachineBasicBlock *&FBB,
@@ -403,17 +394,6 @@ bool ARMBaseInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
     } else if (I->isReturn()) {
       // Returns can't be analyzed, but we should run cleanup.
       CantAnalyze = true;
-    } else if (I->getOpcode() == ARM::t2LoopEnd &&
-               MBB.getParent()
-                   ->getSubtarget<ARMSubtarget>()
-                   .enableMachinePipeliner()) {
-      if (!Cond.empty())
-        return true;
-      FBB = TBB;
-      TBB = I->getOperand(1).getMBB();
-      Cond.push_back(MachineOperand::CreateImm(I->getOpcode()));
-      Cond.push_back(I->getOperand(0));
-      Cond.push_back(MachineOperand::CreateImm(0));
     } else {
       // We encountered other unrecognized terminator. Bail out immediately.
       return true;
@@ -477,7 +457,7 @@ unsigned ARMBaseInstrInfo::removeBranch(MachineBasicBlock &MBB,
     return 0;
 
   if (!isUncondBranchOpcode(I->getOpcode()) &&
-      !isCondBranchOpcode(I->getOpcode()) && I->getOpcode() != ARM::t2LoopEnd)
+      !isCondBranchOpcode(I->getOpcode()))
     return 0;
 
   // Remove the branch.
@@ -487,7 +467,7 @@ unsigned ARMBaseInstrInfo::removeBranch(MachineBasicBlock &MBB,
 
   if (I == MBB.begin()) return 1;
   --I;
-  if (!isCondBranchOpcode(I->getOpcode()) && I->getOpcode() != ARM::t2LoopEnd)
+  if (!isCondBranchOpcode(I->getOpcode()))
     return 1;
 
   // Remove the branch.
@@ -511,8 +491,8 @@ unsigned ARMBaseInstrInfo::insertBranch(MachineBasicBlock &MBB,
 
   // Shouldn't be a fall through.
   assert(TBB && "insertBranch must not be told to insert a fallthrough");
-  assert((Cond.size() == 2 || Cond.size() == 0 || Cond.size() == 3) &&
-         "ARM branch conditions have two or three components!");
+  assert((Cond.size() == 2 || Cond.size() == 0) &&
+         "ARM branch conditions have two components!");
 
   // For conditional branches, we use addOperand to preserve CPSR flags.
 
@@ -522,24 +502,19 @@ unsigned ARMBaseInstrInfo::insertBranch(MachineBasicBlock &MBB,
         BuildMI(&MBB, DL, get(BOpc)).addMBB(TBB).add(predOps(ARMCC::AL));
       else
         BuildMI(&MBB, DL, get(BOpc)).addMBB(TBB);
-    } else if (Cond.size() == 2) {
+    } else
       BuildMI(&MBB, DL, get(BccOpc))
           .addMBB(TBB)
           .addImm(Cond[0].getImm())
           .add(Cond[1]);
-    } else
-      BuildMI(&MBB, DL, get(Cond[0].getImm())).add(Cond[1]).addMBB(TBB);
     return 1;
   }
 
   // Two-way conditional branch.
-  if (Cond.size() == 2)
-    BuildMI(&MBB, DL, get(BccOpc))
-        .addMBB(TBB)
-        .addImm(Cond[0].getImm())
-        .add(Cond[1]);
-  else if (Cond.size() == 3)
-    BuildMI(&MBB, DL, get(Cond[0].getImm())).add(Cond[1]).addMBB(TBB);
+  BuildMI(&MBB, DL, get(BccOpc))
+      .addMBB(TBB)
+      .addImm(Cond[0].getImm())
+      .add(Cond[1]);
   if (isThumb)
     BuildMI(&MBB, DL, get(BOpc)).addMBB(FBB).add(predOps(ARMCC::AL));
   else
@@ -549,12 +524,9 @@ unsigned ARMBaseInstrInfo::insertBranch(MachineBasicBlock &MBB,
 
 bool ARMBaseInstrInfo::
 reverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const {
-  if (Cond.size() == 2) {
-    ARMCC::CondCodes CC = (ARMCC::CondCodes)(int)Cond[0].getImm();
-    Cond[0].setImm(ARMCC::getOppositeCondition(CC));
-    return false;
-  }
-  return true;
+  ARMCC::CondCodes CC = (ARMCC::CondCodes)(int)Cond[0].getImm();
+  Cond[0].setImm(ARMCC::getOppositeCondition(CC));
+  return false;
 }
 
 bool ARMBaseInstrInfo::isPredicated(const MachineInstr &MI) const {
@@ -584,7 +556,7 @@ std::string ARMBaseInstrInfo::createMIROperandComment(
     return GenericComment;
 
   // If not, check if we have an immediate operand.
-  if (!Op.isImm())
+  if (Op.getType() != MachineOperand::MO_Immediate)
     return std::string();
 
   // And print its corresponding condition code if the immediate is a
@@ -661,7 +633,8 @@ bool ARMBaseInstrInfo::ClobbersPredicate(MachineInstr &MI,
                                          std::vector<MachineOperand> &Pred,
                                          bool SkipDead) const {
   bool Found = false;
-  for (const MachineOperand &MO : MI.operands()) {
+  for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
+    const MachineOperand &MO = MI.getOperand(i);
     bool ClobbersCPSR = MO.isRegMask() && MO.clobbersPhysReg(ARM::CPSR);
     bool IsCPSR = MO.isReg() && MO.isDef() && MO.getReg() == ARM::CPSR;
     if (ClobbersCPSR || IsCPSR) {
@@ -758,7 +731,8 @@ bool ARMBaseInstrInfo::isPredicable(const MachineInstr &MI) const {
 namespace llvm {
 
 template <> bool IsCPSRDead<MachineInstr>(const MachineInstr *MI) {
-  for (const MachineOperand &MO : MI->operands()) {
+  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
+    const MachineOperand &MO = MI->getOperand(i);
     if (!MO.isReg() || MO.isUndef() || MO.isUse())
       continue;
     if (MO.getReg() != ARM::CPSR)
@@ -780,17 +754,23 @@ unsigned ARMBaseInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
   const MCAsmInfo *MAI = MF->getTarget().getMCAsmInfo();
 
   const MCInstrDesc &MCID = MI.getDesc();
+  if (MCID.getSize())
+    return MCID.getSize();
 
   switch (MI.getOpcode()) {
   default:
-    // Return the size specified in .td file. If there's none, return 0, as we
-    // can't define a default size (Thumb1 instructions are 2 bytes, Thumb2
-    // instructions are 2-4 bytes, and ARM instructions are 4 bytes), in
-    // contrast to AArch64 instructions which have a default size of 4 bytes for
-    // example.
-    return MCID.getSize();
+    // pseudo-instruction sizes are zero.
+    return 0;
   case TargetOpcode::BUNDLE:
     return getInstBundleLength(MI);
+  case ARM::MOVi16_ga_pcrel:
+  case ARM::MOVTi16_ga_pcrel:
+  case ARM::t2MOVi16_ga_pcrel:
+  case ARM::t2MOVTi16_ga_pcrel:
+    return 4;
+  case ARM::MOVi32imm:
+  case ARM::t2MOVi32imm:
+    return 8;
   case ARM::CONSTPOOL_ENTRY:
   case ARM::JUMPTABLE_INSTS:
   case ARM::JUMPTABLE_ADDRS:
@@ -799,6 +779,19 @@ unsigned ARMBaseInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
     // If this machine instr is a constant pool entry, its size is recorded as
     // operand #2.
     return MI.getOperand(2).getImm();
+  case ARM::Int_eh_sjlj_longjmp:
+    return 16;
+  case ARM::tInt_eh_sjlj_longjmp:
+    return 10;
+  case ARM::tInt_WIN_eh_sjlj_longjmp:
+    return 12;
+  case ARM::Int_eh_sjlj_setjmp:
+  case ARM::Int_eh_sjlj_setjmp_nofp:
+    return 20;
+  case ARM::tInt_eh_sjlj_setjmp:
+  case ARM::t2Int_eh_sjlj_setjmp:
+  case ARM::t2Int_eh_sjlj_setjmp_nofp:
+    return 12;
   case ARM::SPACE:
     return MI.getOperand(1).getImm();
   case ARM::INLINEASM:
@@ -809,6 +802,14 @@ unsigned ARMBaseInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
       Size = alignTo(Size, 4);
     return Size;
   }
+  case ARM::SpeculationBarrierISBDSBEndBB:
+  case ARM::t2SpeculationBarrierISBDSBEndBB:
+    // This gets lowered to 2 4-byte instructions.
+    return 8;
+  case ARM::SpeculationBarrierSBEndBB:
+  case ARM::t2SpeculationBarrierSBEndBB:
+    // This gets lowered to 1 4-byte instructions.
+    return 4;
   }
 }
 
@@ -866,7 +867,6 @@ void ARMBaseInstrInfo::copyToCPSR(MachineBasicBlock &MBB,
 void llvm::addUnpredicatedMveVpredNOp(MachineInstrBuilder &MIB) {
   MIB.addImm(ARMVCC::None);
   MIB.addReg(0);
-  MIB.addReg(0); // tp_reg
 }
 
 void llvm::addUnpredicatedMveVpredROp(MachineInstrBuilder &MIB,
@@ -878,7 +878,6 @@ void llvm::addUnpredicatedMveVpredROp(MachineInstrBuilder &MIB,
 void llvm::addPredicatedMveVpredNOp(MachineInstrBuilder &MIB, unsigned Cond) {
   MIB.addImm(Cond);
   MIB.addReg(ARM::VPR, RegState::Implicit);
-  MIB.addReg(0); // tp_reg
 }
 
 void llvm::addPredicatedMveVpredROp(MachineInstrBuilder &MIB,
@@ -915,7 +914,7 @@ void ARMBaseInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
   else if (ARM::DPRRegClass.contains(DestReg, SrcReg) && Subtarget.hasFP64())
     Opc = ARM::VMOVD;
   else if (ARM::QPRRegClass.contains(DestReg, SrcReg))
-    Opc = Subtarget.hasNEON() ? ARM::VORRq : ARM::MQPRCopy;
+    Opc = Subtarget.hasNEON() ? ARM::VORRq : ARM::MVE_VORR;
 
   if (Opc) {
     MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(Opc), DestReg);
@@ -924,7 +923,7 @@ void ARMBaseInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
       MIB.addReg(SrcReg, getKillRegState(KillSrc));
     if (Opc == ARM::MVE_VORR)
       addUnpredicatedMveVpredROp(MIB, DestReg);
-    else if (Opc != ARM::MQPRCopy)
+    else
       MIB.add(predOps(ARMCC::AL));
     return;
   }
@@ -1053,7 +1052,7 @@ void ARMBaseInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     Mov->addRegisterKilled(SrcReg, TRI);
 }
 
-std::optional<DestSourcePair>
+Optional<DestSourcePair>
 ARMBaseInstrInfo::isCopyInstrImpl(const MachineInstr &MI) const {
   // VMOVRRD is also a copy instruction but it requires
   // special way of handling. It is more complex copy version
@@ -1065,11 +1064,11 @@ ARMBaseInstrInfo::isCopyInstrImpl(const MachineInstr &MI) const {
   if (!MI.isMoveReg() ||
       (MI.getOpcode() == ARM::VORRq &&
        MI.getOperand(1).getReg() != MI.getOperand(2).getReg()))
-    return std::nullopt;
+    return None;
   return DestSourcePair{MI.getOperand(0), MI.getOperand(1)};
 }
 
-std::optional<ParamLoadedValue>
+Optional<ParamLoadedValue>
 ARMBaseInstrInfo::describeLoadedValue(const MachineInstr &MI,
                                       Register Reg) const {
   if (auto DstSrcPair = isCopyInstrImpl(MI)) {
@@ -1094,7 +1093,7 @@ ARMBaseInstrInfo::describeLoadedValue(const MachineInstr &MI,
     // We need to produce a fragment description (the call site value of s1 is
     // /not/ just d8).
     if (DstReg != Reg)
-      return std::nullopt;
+      return None;
   }
   return TargetInstrInfo::describeLoadedValue(MI, Reg);
 }
@@ -1111,12 +1110,11 @@ ARMBaseInstrInfo::AddDReg(MachineInstrBuilder &MIB, unsigned Reg,
   return MIB.addReg(Reg, State, SubIdx);
 }
 
-void ARMBaseInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
-                                           MachineBasicBlock::iterator I,
-                                           Register SrcReg, bool isKill, int FI,
-                                           const TargetRegisterClass *RC,
-                                           const TargetRegisterInfo *TRI,
-                                           Register VReg) const {
+void ARMBaseInstrInfo::
+storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
+                    Register SrcReg, bool isKill, int FI,
+                    const TargetRegisterClass *RC,
+                    const TargetRegisterInfo *TRI) const {
   MachineFunction &MF = *MBB.getParent();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   Align Alignment = MFI.getObjectAlign(FI);
@@ -1243,9 +1241,7 @@ void ARMBaseInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
         llvm_unreachable("Unknown reg class!");
       break;
     case 32:
-      if (ARM::QQPRRegClass.hasSubClassEq(RC) ||
-          ARM::MQQPRRegClass.hasSubClassEq(RC) ||
-          ARM::DQuadRegClass.hasSubClassEq(RC)) {
+      if (ARM::QQPRRegClass.hasSubClassEq(RC) || ARM::DQuadRegClass.hasSubClassEq(RC)) {
         if (Alignment >= 16 && getRegisterInfo().canRealignStack(MF) &&
             Subtarget.hasNEON()) {
           // FIXME: It's possible to only store part of the QQ register if the
@@ -1256,11 +1252,6 @@ void ARMBaseInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
               .addReg(SrcReg, getKillRegState(isKill))
               .addMemOperand(MMO)
               .add(predOps(ARMCC::AL));
-        } else if (Subtarget.hasMVEIntegerOps()) {
-          BuildMI(MBB, I, DebugLoc(), get(ARM::MQQPRStore))
-              .addReg(SrcReg, getKillRegState(isKill))
-              .addFrameIndex(FI)
-              .addMemOperand(MMO);
         } else {
           MachineInstrBuilder MIB = BuildMI(MBB, I, DebugLoc(),
                                             get(ARM::VSTMDIA))
@@ -1276,13 +1267,7 @@ void ARMBaseInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
         llvm_unreachable("Unknown reg class!");
       break;
     case 64:
-      if (ARM::MQQQQPRRegClass.hasSubClassEq(RC) &&
-          Subtarget.hasMVEIntegerOps()) {
-        BuildMI(MBB, I, DebugLoc(), get(ARM::MQQQQPRStore))
-            .addReg(SrcReg, getKillRegState(isKill))
-            .addFrameIndex(FI)
-            .addMemOperand(MMO);
-      } else if (ARM::QQQQPRRegClass.hasSubClassEq(RC)) {
+      if (ARM::QQQQPRRegClass.hasSubClassEq(RC)) {
         MachineInstrBuilder MIB = BuildMI(MBB, I, DebugLoc(), get(ARM::VSTMDIA))
                                       .addFrameIndex(FI)
                                       .add(predOps(ARMCC::AL))
@@ -1321,12 +1306,17 @@ unsigned ARMBaseInstrInfo::isStoreToStackSlot(const MachineInstr &MI,
   case ARM::tSTRspi:
   case ARM::VSTRD:
   case ARM::VSTRS:
-  case ARM::VSTR_P0_off:
-  case ARM::MVE_VSTRWU32:
     if (MI.getOperand(1).isFI() && MI.getOperand(2).isImm() &&
         MI.getOperand(2).getImm() == 0) {
       FrameIndex = MI.getOperand(1).getIndex();
       return MI.getOperand(0).getReg();
+    }
+    break;
+  case ARM::VSTR_P0_off:
+    if (MI.getOperand(0).isFI() && MI.getOperand(1).isImm() &&
+        MI.getOperand(1).getImm() == 0) {
+      FrameIndex = MI.getOperand(0).getIndex();
+      return ARM::P0;
     }
     break;
   case ARM::VST1q64:
@@ -1339,13 +1329,6 @@ unsigned ARMBaseInstrInfo::isStoreToStackSlot(const MachineInstr &MI,
     break;
   case ARM::VSTMQIA:
     if (MI.getOperand(1).isFI() && MI.getOperand(0).getSubReg() == 0) {
-      FrameIndex = MI.getOperand(1).getIndex();
-      return MI.getOperand(0).getReg();
-    }
-    break;
-  case ARM::MQQPRStore:
-  case ARM::MQQQQPRStore:
-    if (MI.getOperand(1).isFI()) {
       FrameIndex = MI.getOperand(1).getIndex();
       return MI.getOperand(0).getReg();
     }
@@ -1368,12 +1351,11 @@ unsigned ARMBaseInstrInfo::isStoreToStackSlotPostFE(const MachineInstr &MI,
   return false;
 }
 
-void ARMBaseInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
-                                            MachineBasicBlock::iterator I,
-                                            Register DestReg, int FI,
-                                            const TargetRegisterClass *RC,
-                                            const TargetRegisterInfo *TRI,
-                                            Register VReg) const {
+void ARMBaseInstrInfo::
+loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
+                     Register DestReg, int FI,
+                     const TargetRegisterClass *RC,
+                     const TargetRegisterInfo *TRI) const {
   DebugLoc DL;
   if (I != MBB.end()) DL = I->getDebugLoc();
   MachineFunction &MF = *MBB.getParent();
@@ -1496,42 +1478,31 @@ void ARMBaseInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
       llvm_unreachable("Unknown reg class!");
     break;
    case 32:
-     if (ARM::QQPRRegClass.hasSubClassEq(RC) ||
-         ARM::MQQPRRegClass.hasSubClassEq(RC) ||
-         ARM::DQuadRegClass.hasSubClassEq(RC)) {
-       if (Alignment >= 16 && getRegisterInfo().canRealignStack(MF) &&
-           Subtarget.hasNEON()) {
-         BuildMI(MBB, I, DL, get(ARM::VLD1d64QPseudo), DestReg)
-             .addFrameIndex(FI)
-             .addImm(16)
-             .addMemOperand(MMO)
-             .add(predOps(ARMCC::AL));
-       } else if (Subtarget.hasMVEIntegerOps()) {
-         BuildMI(MBB, I, DL, get(ARM::MQQPRLoad), DestReg)
-             .addFrameIndex(FI)
-             .addMemOperand(MMO);
-       } else {
-         MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(ARM::VLDMDIA))
-                                       .addFrameIndex(FI)
-                                       .add(predOps(ARMCC::AL))
-                                       .addMemOperand(MMO);
-         MIB = AddDReg(MIB, DestReg, ARM::dsub_0, RegState::DefineNoRead, TRI);
-         MIB = AddDReg(MIB, DestReg, ARM::dsub_1, RegState::DefineNoRead, TRI);
-         MIB = AddDReg(MIB, DestReg, ARM::dsub_2, RegState::DefineNoRead, TRI);
-         MIB = AddDReg(MIB, DestReg, ARM::dsub_3, RegState::DefineNoRead, TRI);
-         if (Register::isPhysicalRegister(DestReg))
-           MIB.addReg(DestReg, RegState::ImplicitDefine);
-       }
-     } else
-       llvm_unreachable("Unknown reg class!");
-     break;
+    if (ARM::QQPRRegClass.hasSubClassEq(RC) || ARM::DQuadRegClass.hasSubClassEq(RC)) {
+      if (Alignment >= 16 && getRegisterInfo().canRealignStack(MF) &&
+          Subtarget.hasNEON()) {
+        BuildMI(MBB, I, DL, get(ARM::VLD1d64QPseudo), DestReg)
+            .addFrameIndex(FI)
+            .addImm(16)
+            .addMemOperand(MMO)
+            .add(predOps(ARMCC::AL));
+      } else {
+        MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(ARM::VLDMDIA))
+                                      .addFrameIndex(FI)
+                                      .add(predOps(ARMCC::AL))
+                                      .addMemOperand(MMO);
+        MIB = AddDReg(MIB, DestReg, ARM::dsub_0, RegState::DefineNoRead, TRI);
+        MIB = AddDReg(MIB, DestReg, ARM::dsub_1, RegState::DefineNoRead, TRI);
+        MIB = AddDReg(MIB, DestReg, ARM::dsub_2, RegState::DefineNoRead, TRI);
+        MIB = AddDReg(MIB, DestReg, ARM::dsub_3, RegState::DefineNoRead, TRI);
+        if (Register::isPhysicalRegister(DestReg))
+          MIB.addReg(DestReg, RegState::ImplicitDefine);
+      }
+    } else
+      llvm_unreachable("Unknown reg class!");
+    break;
   case 64:
-    if (ARM::MQQQQPRRegClass.hasSubClassEq(RC) &&
-        Subtarget.hasMVEIntegerOps()) {
-      BuildMI(MBB, I, DL, get(ARM::MQQQQPRLoad), DestReg)
-          .addFrameIndex(FI)
-          .addMemOperand(MMO);
-    } else if (ARM::QQQQPRRegClass.hasSubClassEq(RC)) {
+    if (ARM::QQQQPRRegClass.hasSubClassEq(RC)) {
       MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(ARM::VLDMDIA))
                                     .addFrameIndex(FI)
                                     .add(predOps(ARMCC::AL))
@@ -1572,12 +1543,17 @@ unsigned ARMBaseInstrInfo::isLoadFromStackSlot(const MachineInstr &MI,
   case ARM::tLDRspi:
   case ARM::VLDRD:
   case ARM::VLDRS:
-  case ARM::VLDR_P0_off:
-  case ARM::MVE_VLDRWU32:
     if (MI.getOperand(1).isFI() && MI.getOperand(2).isImm() &&
         MI.getOperand(2).getImm() == 0) {
       FrameIndex = MI.getOperand(1).getIndex();
       return MI.getOperand(0).getReg();
+    }
+    break;
+  case ARM::VLDR_P0_off:
+    if (MI.getOperand(0).isFI() && MI.getOperand(1).isImm() &&
+        MI.getOperand(1).getImm() == 0) {
+      FrameIndex = MI.getOperand(0).getIndex();
+      return ARM::P0;
     }
     break;
   case ARM::VLD1q64:
@@ -1596,13 +1572,6 @@ unsigned ARMBaseInstrInfo::isLoadFromStackSlot(const MachineInstr &MI,
     break;
   case ARM::VLDMQIA:
     if (MI.getOperand(1).isFI() && MI.getOperand(0).getSubReg() == 0) {
-      FrameIndex = MI.getOperand(1).getIndex();
-      return MI.getOperand(0).getReg();
-    }
-    break;
-  case ARM::MQQPRLoad:
-  case ARM::MQQQQPRLoad:
-    if (MI.getOperand(1).isFI()) {
       FrameIndex = MI.getOperand(1).getIndex();
       return MI.getOperand(0).getReg();
     }
@@ -1683,6 +1652,8 @@ void ARMBaseInstrInfo::expandMEMCPY(MachineBasicBlock::iterator MI) const {
 
 bool ARMBaseInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   if (MI.getOpcode() == TargetOpcode::LOAD_STACK_GUARD) {
+    assert(getSubtarget().getTargetTriple().isOSBinFormatMachO() &&
+           "LOAD_STACK_GUARD currently supported only for MachO.");
     expandLoadStackGuard(MI);
     MI.getParent()->erase(MI);
     return true;
@@ -1733,7 +1704,7 @@ bool ARMBaseInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   // or some other super-register.
   int ImpDefIdx = MI.findRegisterDefOperandIdx(DstRegD);
   if (ImpDefIdx != -1)
-    MI.removeOperand(ImpDefIdx);
+    MI.RemoveOperand(ImpDefIdx);
 
   // Change the opcode and operands.
   MI.setDesc(get(ARM::VMOVD));
@@ -1860,11 +1831,15 @@ bool ARMBaseInstrInfo::produceSameValue(const MachineInstr &MI0,
                                         const MachineInstr &MI1,
                                         const MachineRegisterInfo *MRI) const {
   unsigned Opcode = MI0.getOpcode();
-  if (Opcode == ARM::t2LDRpci || Opcode == ARM::t2LDRpci_pic ||
-      Opcode == ARM::tLDRpci || Opcode == ARM::tLDRpci_pic ||
-      Opcode == ARM::LDRLIT_ga_pcrel || Opcode == ARM::LDRLIT_ga_pcrel_ldr ||
-      Opcode == ARM::tLDRLIT_ga_pcrel || Opcode == ARM::t2LDRLIT_ga_pcrel ||
-      Opcode == ARM::MOV_ga_pcrel || Opcode == ARM::MOV_ga_pcrel_ldr ||
+  if (Opcode == ARM::t2LDRpci ||
+      Opcode == ARM::t2LDRpci_pic ||
+      Opcode == ARM::tLDRpci ||
+      Opcode == ARM::tLDRpci_pic ||
+      Opcode == ARM::LDRLIT_ga_pcrel ||
+      Opcode == ARM::LDRLIT_ga_pcrel_ldr ||
+      Opcode == ARM::tLDRLIT_ga_pcrel ||
+      Opcode == ARM::MOV_ga_pcrel ||
+      Opcode == ARM::MOV_ga_pcrel_ldr ||
       Opcode == ARM::t2MOV_ga_pcrel) {
     if (MI1.getOpcode() != Opcode)
       return false;
@@ -1876,9 +1851,11 @@ bool ARMBaseInstrInfo::produceSameValue(const MachineInstr &MI0,
     if (MO0.getOffset() != MO1.getOffset())
       return false;
 
-    if (Opcode == ARM::LDRLIT_ga_pcrel || Opcode == ARM::LDRLIT_ga_pcrel_ldr ||
-        Opcode == ARM::tLDRLIT_ga_pcrel || Opcode == ARM::t2LDRLIT_ga_pcrel ||
-        Opcode == ARM::MOV_ga_pcrel || Opcode == ARM::MOV_ga_pcrel_ldr ||
+    if (Opcode == ARM::LDRLIT_ga_pcrel ||
+        Opcode == ARM::LDRLIT_ga_pcrel_ldr ||
+        Opcode == ARM::tLDRLIT_ga_pcrel ||
+        Opcode == ARM::MOV_ga_pcrel ||
+        Opcode == ARM::MOV_ga_pcrel_ldr ||
         Opcode == ARM::t2MOV_ga_pcrel)
       // Ignore the PC labels.
       return MO0.getGlobal() == MO1.getGlobal();
@@ -2073,9 +2050,6 @@ bool ARMBaseInstrInfo::isSchedulingBoundary(const MachineInstr &MI,
 
   // INLINEASM_BR can jump to another block
   if (MI.getOpcode() == TargetOpcode::INLINEASM_BR)
-    return true;
-
-  if (isSEHInstruction(MI))
     return true;
 
   // Treat the start of the IT block as a scheduling boundary, but schedule
@@ -2309,7 +2283,8 @@ ARMBaseInstrInfo::canFoldIntoMOVCC(Register Reg, const MachineRegisterInfo &MRI,
     return nullptr;
   // Check if MI has any non-dead defs or physreg uses. This also detects
   // predicated instructions which will be reading CPSR.
-  for (const MachineOperand &MO : llvm::drop_begin(MI->operands(), 1)) {
+  for (unsigned i = 1, e = MI->getNumOperands(); i != e; ++i) {
+    const MachineOperand &MO = MI->getOperand(i);
     // Reject frame index operands, PEI can't handle the predicated pseudos.
     if (MO.isFI() || MO.isCPI() || MO.isJTI())
       return nullptr;
@@ -2366,13 +2341,9 @@ ARMBaseInstrInfo::optimizeSelect(MachineInstr &MI,
 
   // Find new register class to use.
   MachineOperand FalseReg = MI.getOperand(Invert ? 2 : 1);
-  MachineOperand TrueReg = MI.getOperand(Invert ? 1 : 2);
   Register DestReg = MI.getOperand(0).getReg();
-  const TargetRegisterClass *FalseClass = MRI.getRegClass(FalseReg.getReg());
-  const TargetRegisterClass *TrueClass = MRI.getRegClass(TrueReg.getReg());
-  if (!MRI.constrainRegClass(DestReg, FalseClass))
-    return nullptr;
-  if (!MRI.constrainRegClass(DestReg, TrueClass))
+  const TargetRegisterClass *PreviousClass = MRI.getRegClass(FalseReg.getReg());
+  if (!MRI.constrainRegClass(DestReg, PreviousClass))
     return nullptr;
 
   // Create a new predicated version of DefMI.
@@ -2472,9 +2443,9 @@ static const AddSubFlagsOpcodePair AddSubFlagsOpcodeMap[] = {
 };
 
 unsigned llvm::convertAddSubFlagsOpcode(unsigned OldOpc) {
-  for (const auto &Entry : AddSubFlagsOpcodeMap)
-    if (OldOpc == Entry.PseudoOpc)
-      return Entry.MachineOpc;
+  for (unsigned i = 0, e = array_lengthof(AddSubFlagsOpcodeMap); i != e; ++i)
+    if (OldOpc == AddSubFlagsOpcodeMap[i].PseudoOpc)
+      return AddSubFlagsOpcodeMap[i].MachineOpc;
   return 0;
 }
 
@@ -2631,12 +2602,12 @@ bool llvm::tryFoldSPUpdateIntoPushPop(const ARMSubtarget &Subtarget,
   // ahead: strip all existing registers off and add them back again
   // in the right order.
   for (int i = MI->getNumOperands() - 1; i >= RegListIdx; --i)
-    MI->removeOperand(i);
+    MI->RemoveOperand(i);
 
   // Add the complete list back in.
   MachineInstrBuilder MIB(MF, &*MI);
-  for (const MachineOperand &MO : llvm::reverse(RegList))
-    MIB.add(MO);
+  for (int i = RegList.size() - 1; i >= 0; --i)
+    MIB.add(RegList[i]);
 
   return true;
 }
@@ -2659,7 +2630,7 @@ bool llvm::rewriteARMFrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
       // Turn it into a move.
       MI.setDesc(TII.get(ARM::MOVr));
       MI.getOperand(FrameRegIdx).ChangeToRegister(FrameReg, false);
-      MI.removeOperand(FrameRegIdx+1);
+      MI.RemoveOperand(FrameRegIdx+1);
       Offset = 0;
       return true;
     } else if (Offset < 0) {
@@ -2799,8 +2770,8 @@ bool llvm::rewriteARMFrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
 /// compares against in CmpValue. Return true if the comparison instruction
 /// can be analyzed.
 bool ARMBaseInstrInfo::analyzeCompare(const MachineInstr &MI, Register &SrcReg,
-                                      Register &SrcReg2, int64_t &CmpMask,
-                                      int64_t &CmpValue) const {
+                                      Register &SrcReg2, int &CmpMask,
+                                      int &CmpValue) const {
   switch (MI.getOpcode()) {
   default: break;
   case ARM::CMPri:
@@ -2871,8 +2842,7 @@ inline static ARMCC::CondCodes getCmpToAddCondition(ARMCC::CondCodes CC) {
 /// This function can be extended later on.
 inline static bool isRedundantFlagInstr(const MachineInstr *CmpI,
                                         Register SrcReg, Register SrcReg2,
-                                        int64_t ImmValue,
-                                        const MachineInstr *OI,
+                                        int ImmValue, const MachineInstr *OI,
                                         bool &IsThumb1) {
   if ((CmpI->getOpcode() == ARM::CMPrr || CmpI->getOpcode() == ARM::t2CMPrr) &&
       (OI->getOpcode() == ARM::SUBrr || OI->getOpcode() == ARM::t2SUBrr) &&
@@ -2957,7 +2927,7 @@ static bool isOptimizeCompareCandidate(MachineInstr *MI, bool &IsThumb1) {
   case ARM::tASRrr:
   case ARM::tROR:
     IsThumb1 = true;
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case ARM::RSBrr:
   case ARM::RSBri:
   case ARM::RSCrr:
@@ -2981,38 +2951,20 @@ static bool isOptimizeCompareCandidate(MachineInstr *MI, bool &IsThumb1) {
   case ARM::t2SBCri:
   case ARM::ANDrr:
   case ARM::ANDri:
-  case ARM::ANDrsr:
-  case ARM::ANDrsi:
   case ARM::t2ANDrr:
   case ARM::t2ANDri:
-  case ARM::t2ANDrs:
   case ARM::ORRrr:
   case ARM::ORRri:
-  case ARM::ORRrsr:
-  case ARM::ORRrsi:
   case ARM::t2ORRrr:
   case ARM::t2ORRri:
-  case ARM::t2ORRrs:
   case ARM::EORrr:
   case ARM::EORri:
-  case ARM::EORrsr:
-  case ARM::EORrsi:
   case ARM::t2EORrr:
   case ARM::t2EORri:
-  case ARM::t2EORrs:
-  case ARM::BICri:
-  case ARM::BICrr:
-  case ARM::BICrsi:
-  case ARM::BICrsr:
-  case ARM::t2BICri:
-  case ARM::t2BICrr:
-  case ARM::t2BICrs:
   case ARM::t2LSRri:
   case ARM::t2LSRrr:
   case ARM::t2LSLri:
   case ARM::t2LSLrr:
-  case ARM::MOVsr:
-  case ARM::MOVsi:
     return true;
   }
 }
@@ -3025,8 +2977,8 @@ static bool isOptimizeCompareCandidate(MachineInstr *MI, bool &IsThumb1) {
 /// operands are swapped: SUBrr(r1,r2) and CMPrr(r2,r1), by updating the
 /// condition code of instructions which use the flags.
 bool ARMBaseInstrInfo::optimizeCompareInstr(
-    MachineInstr &CmpInstr, Register SrcReg, Register SrcReg2, int64_t CmpMask,
-    int64_t CmpValue, const MachineRegisterInfo *MRI) const {
+    MachineInstr &CmpInstr, Register SrcReg, Register SrcReg2, int CmpMask,
+    int CmpValue, const MachineRegisterInfo *MRI) const {
   // Get the unique definition of SrcReg.
   MachineInstr *MI = MRI->getUniqueVRegDef(SrcReg);
   if (!MI) return false;
@@ -3278,17 +3230,17 @@ bool ARMBaseInstrInfo::optimizeCompareInstr(
   // live-out. If it is live-out, do not optimize.
   if (!isSafe) {
     MachineBasicBlock *MBB = CmpInstr.getParent();
-    for (MachineBasicBlock *Succ : MBB->successors())
-      if (Succ->isLiveIn(ARM::CPSR))
+    for (MachineBasicBlock::succ_iterator SI = MBB->succ_begin(),
+             SE = MBB->succ_end(); SI != SE; ++SI)
+      if ((*SI)->isLiveIn(ARM::CPSR))
         return false;
   }
 
   // Toggle the optional operand to CPSR (if it exists - in Thumb1 we always
   // set CPSR so this is represented as an explicit output)
   if (!IsThumb1) {
-    unsigned CPSRRegNum = MI->getNumExplicitOperands() - 1;
-    MI->getOperand(CPSRRegNum).setReg(ARM::CPSR);
-    MI->getOperand(CPSRRegNum).setIsDef(true);
+    MI->getOperand(5).setReg(ARM::CPSR);
+    MI->getOperand(5).setIsDef(true);
   }
   assert(!isPredicated(*MI) && "Can't use flags from predicated instruction");
   CmpInstr.eraseFromParent();
@@ -3313,7 +3265,7 @@ bool ARMBaseInstrInfo::shouldSink(const MachineInstr &MI) const {
   MachineBasicBlock::const_iterator Next = &MI;
   ++Next;
   Register SrcReg, SrcReg2;
-  int64_t CmpMask, CmpValue;
+  int CmpMask, CmpValue;
   bool IsThumb1;
   if (Next != MI.getParent()->end() &&
       analyzeCompare(*Next, SrcReg, SrcReg2, CmpMask, CmpValue) &&
@@ -4872,10 +4824,11 @@ bool ARMBaseInstrInfo::verifyInstruction(const MachineInstr &MI,
   if (MI.getOpcode() == ARM::tPUSH ||
       MI.getOpcode() == ARM::tPOP ||
       MI.getOpcode() == ARM::tPOP_RET) {
-    for (const MachineOperand &MO : llvm::drop_begin(MI.operands(), 2)) {
-      if (MO.isImplicit() || !MO.isReg())
+    for (int i = 2, e = MI.getNumOperands(); i < e; ++i) {
+      if (MI.getOperand(i).isImplicit() ||
+          !MI.getOperand(i).isReg())
         continue;
-      Register Reg = MO.getReg();
+      Register Reg = MI.getOperand(i).getReg();
       if (Reg < ARM::R0 || Reg > ARM::R7) {
         if (!(MI.getOpcode() == ARM::tPUSH && Reg == ARM::LR) &&
             !(MI.getOpcode() == ARM::tPOP_RET && Reg == ARM::PC)) {
@@ -4893,39 +4846,11 @@ bool ARMBaseInstrInfo::verifyInstruction(const MachineInstr &MI,
       return false;
     }
   }
-
-  // Check the address model by taking the first Imm operand and checking it is
-  // legal for that addressing mode.
-  ARMII::AddrMode AddrMode =
-      (ARMII::AddrMode)(MI.getDesc().TSFlags & ARMII::AddrModeMask);
-  switch (AddrMode) {
-  default:
-    break;
-  case ARMII::AddrModeT2_i7:
-  case ARMII::AddrModeT2_i7s2:
-  case ARMII::AddrModeT2_i7s4:
-  case ARMII::AddrModeT2_i8:
-  case ARMII::AddrModeT2_i8pos:
-  case ARMII::AddrModeT2_i8neg:
-  case ARMII::AddrModeT2_i8s4:
-  case ARMII::AddrModeT2_i12: {
-    uint32_t Imm = 0;
-    for (auto Op : MI.operands()) {
-      if (Op.isImm()) {
-        Imm = Op.getImm();
-        break;
-      }
-    }
-    if (!isLegalAddressImm(MI.getOpcode(), Imm, this)) {
-      ErrInfo = "Incorrect AddrMode Imm for instruction";
-      return false;
-    }
-    break;
-  }
-  }
   return true;
 }
 
+// LoadStackGuard has so far only been implemented for MachO. Different code
+// sequence is needed for other targets.
 void ARMBaseInstrInfo::expandLoadStackGuardBase(MachineBasicBlock::iterator MI,
                                                 unsigned LoadImmOpc,
                                                 unsigned LoadOpc) const {
@@ -4935,70 +4860,27 @@ void ARMBaseInstrInfo::expandLoadStackGuardBase(MachineBasicBlock::iterator MI,
   MachineBasicBlock &MBB = *MI->getParent();
   DebugLoc DL = MI->getDebugLoc();
   Register Reg = MI->getOperand(0).getReg();
+  const GlobalValue *GV =
+      cast<GlobalValue>((*MI->memoperands_begin())->getValue());
   MachineInstrBuilder MIB;
-  unsigned int Offset = 0;
 
-  if (LoadImmOpc == ARM::MRC || LoadImmOpc == ARM::t2MRC) {
-    assert(Subtarget.isReadTPHard() &&
-           "TLS stack protector requires hardware TLS register");
+  BuildMI(MBB, MI, DL, get(LoadImmOpc), Reg)
+      .addGlobalAddress(GV, 0, ARMII::MO_NONLAZY);
 
-    BuildMI(MBB, MI, DL, get(LoadImmOpc), Reg)
-        .addImm(15)
-        .addImm(0)
-        .addImm(13)
-        .addImm(0)
-        .addImm(3)
-        .add(predOps(ARMCC::AL));
-
-    Module &M = *MBB.getParent()->getFunction().getParent();
-    Offset = M.getStackProtectorGuardOffset();
-    if (Offset & ~0xfffU) {
-      // The offset won't fit in the LDR's 12-bit immediate field, so emit an
-      // extra ADD to cover the delta. This gives us a guaranteed 8 additional
-      // bits, resulting in a range of 0 to +1 MiB for the guard offset.
-      unsigned AddOpc = (LoadImmOpc == ARM::MRC) ? ARM::ADDri : ARM::t2ADDri;
-      BuildMI(MBB, MI, DL, get(AddOpc), Reg)
-          .addReg(Reg, RegState::Kill)
-          .addImm(Offset & ~0xfffU)
-          .add(predOps(ARMCC::AL))
-          .addReg(0);
-      Offset &= 0xfffU;
-    }
-  } else {
-    const GlobalValue *GV =
-        cast<GlobalValue>((*MI->memoperands_begin())->getValue());
-    bool IsIndirect = Subtarget.isGVIndirectSymbol(GV);
-
-    unsigned TargetFlags = ARMII::MO_NO_FLAG;
-    if (Subtarget.isTargetMachO()) {
-      TargetFlags |= ARMII::MO_NONLAZY;
-    } else if (Subtarget.isTargetCOFF()) {
-      if (GV->hasDLLImportStorageClass())
-        TargetFlags |= ARMII::MO_DLLIMPORT;
-      else if (IsIndirect)
-        TargetFlags |= ARMII::MO_COFFSTUB;
-    } else if (Subtarget.isGVInGOT(GV)) {
-      TargetFlags |= ARMII::MO_GOT;
-    }
-
-    BuildMI(MBB, MI, DL, get(LoadImmOpc), Reg)
-        .addGlobalAddress(GV, 0, TargetFlags);
-
-    if (IsIndirect) {
-      MIB = BuildMI(MBB, MI, DL, get(LoadOpc), Reg);
-      MIB.addReg(Reg, RegState::Kill).addImm(0);
-      auto Flags = MachineMemOperand::MOLoad |
-                   MachineMemOperand::MODereferenceable |
-                   MachineMemOperand::MOInvariant;
-      MachineMemOperand *MMO = MBB.getParent()->getMachineMemOperand(
-          MachinePointerInfo::getGOT(*MBB.getParent()), Flags, 4, Align(4));
-      MIB.addMemOperand(MMO).add(predOps(ARMCC::AL));
-    }
+  if (Subtarget.isGVIndirectSymbol(GV)) {
+    MIB = BuildMI(MBB, MI, DL, get(LoadOpc), Reg);
+    MIB.addReg(Reg, RegState::Kill).addImm(0);
+    auto Flags = MachineMemOperand::MOLoad |
+                 MachineMemOperand::MODereferenceable |
+                 MachineMemOperand::MOInvariant;
+    MachineMemOperand *MMO = MBB.getParent()->getMachineMemOperand(
+        MachinePointerInfo::getGOT(*MBB.getParent()), Flags, 4, Align(4));
+    MIB.addMemOperand(MMO).add(predOps(ARMCC::AL));
   }
 
   MIB = BuildMI(MBB, MI, DL, get(LoadOpc), Reg);
   MIB.addReg(Reg, RegState::Kill)
-      .addImm(Offset)
+      .addImm(0)
       .cloneMemRefs(*MI)
       .add(predOps(ARMCC::AL));
 }
@@ -5155,7 +5037,7 @@ void ARMBaseInstrInfo::setExecutionDomain(MachineInstr &MI,
     SrcReg = MI.getOperand(1).getReg();
 
     for (unsigned i = MI.getDesc().getNumOperands(); i; --i)
-      MI.removeOperand(i - 1);
+      MI.RemoveOperand(i - 1);
 
     // Change to a %DDst = VORRd %DSrc, %DSrc, 14, %noreg (; implicits)
     MI.setDesc(get(ARM::VORRd));
@@ -5174,7 +5056,7 @@ void ARMBaseInstrInfo::setExecutionDomain(MachineInstr &MI,
     SrcReg = MI.getOperand(1).getReg();
 
     for (unsigned i = MI.getDesc().getNumOperands(); i; --i)
-      MI.removeOperand(i - 1);
+      MI.RemoveOperand(i - 1);
 
     DReg = getCorrespondingDRegAndLane(TRI, SrcReg, Lane);
 
@@ -5207,7 +5089,7 @@ void ARMBaseInstrInfo::setExecutionDomain(MachineInstr &MI,
       break;
 
     for (unsigned i = MI.getDesc().getNumOperands(); i; --i)
-      MI.removeOperand(i - 1);
+      MI.RemoveOperand(i - 1);
 
     // Convert to %DDst = VSETLNi32 %DDst, %RSrc, Lane, 14, %noreg (; imps)
     // Again DDst may be undefined at the beginning of this instruction.
@@ -5242,7 +5124,7 @@ void ARMBaseInstrInfo::setExecutionDomain(MachineInstr &MI,
         break;
 
       for (unsigned i = MI.getDesc().getNumOperands(); i; --i)
-        MI.removeOperand(i - 1);
+        MI.RemoveOperand(i - 1);
 
       if (DSrc == DDst) {
         // Destination can be:
@@ -5509,9 +5391,7 @@ bool ARMBaseInstrInfo::getInsertSubregLikeInputs(
 
   switch (MI.getOpcode()) {
   case ARM::VSETLNi32:
-  case ARM::MVE_VMOV_to_lane_32:
     // dX = VSETLNi32 dY, rZ, imm
-    // qX = MVE_VMOV_to_lane_32 qY, rZ, imm
     const MachineOperand &MOBaseReg = MI.getOperand(1);
     const MachineOperand &MOInsertedReg = MI.getOperand(2);
     if (MOInsertedReg.isUndef())
@@ -5522,7 +5402,7 @@ bool ARMBaseInstrInfo::getInsertSubregLikeInputs(
 
     InsertedReg.Reg = MOInsertedReg.getReg();
     InsertedReg.SubReg = MOInsertedReg.getSubReg();
-    InsertedReg.SubIdx = ARM::ssub_0 + MOIndex.getImm();
+    InsertedReg.SubIdx = MOIndex.getImm() == 0 ? ARM::ssub_0 : ARM::ssub_1;
     return true;
   }
   llvm_unreachable("Target dependent opcode missing");
@@ -5540,7 +5420,7 @@ ARMBaseInstrInfo::getSerializableDirectMachineOperandTargetFlags() const {
 
   static const std::pair<unsigned, const char *> TargetFlags[] = {
       {MO_LO16, "arm-lo16"}, {MO_HI16, "arm-hi16"}};
-  return ArrayRef(TargetFlags);
+  return makeArrayRef(TargetFlags);
 }
 
 ArrayRef<std::pair<unsigned, const char *>>
@@ -5554,11 +5434,11 @@ ARMBaseInstrInfo::getSerializableBitmaskMachineOperandTargetFlags() const {
       {MO_DLLIMPORT, "arm-dllimport"},
       {MO_SECREL, "arm-secrel"},
       {MO_NONLAZY, "arm-nonlazy"}};
-  return ArrayRef(TargetFlags);
+  return makeArrayRef(TargetFlags);
 }
 
-std::optional<RegImmPair>
-ARMBaseInstrInfo::isAddImmediate(const MachineInstr &MI, Register Reg) const {
+Optional<RegImmPair> ARMBaseInstrInfo::isAddImmediate(const MachineInstr &MI,
+                                                      Register Reg) const {
   int Sign = 1;
   unsigned Opcode = MI.getOpcode();
   int64_t Offset = 0;
@@ -5567,19 +5447,19 @@ ARMBaseInstrInfo::isAddImmediate(const MachineInstr &MI, Register Reg) const {
   // destination register.
   const MachineOperand &Op0 = MI.getOperand(0);
   if (!Op0.isReg() || Reg != Op0.getReg())
-    return std::nullopt;
+    return None;
 
   // We describe SUBri or ADDri instructions.
   if (Opcode == ARM::SUBri)
     Sign = -1;
   else if (Opcode != ARM::ADDri)
-    return std::nullopt;
+    return None;
 
   // TODO: Third operand can be global address (usually some string). Since
   //       strings can be relocated we cannot calculate their offsets for
   //       now.
   if (!MI.getOperand(1).isReg() || !MI.getOperand(2).isImm())
-    return std::nullopt;
+    return None;
 
   Offset = MI.getOperand(2).getImm() * Sign;
   return RegImmPair{MI.getOperand(1).getReg(), Offset};
@@ -5733,7 +5613,7 @@ bool llvm::HasLowerConstantMaterializationCost(unsigned Val1, unsigned Val2,
 /// |                         | Thumb2 | ARM |
 /// +-------------------------+--------+-----+
 /// | Call overhead in Bytes  |      4 |   4 |
-/// | Frame overhead in Bytes |      2 |   4 |
+/// | Frame overhead in Bytes |      4 |   4 |
 /// | Stack fixup required    |     No |  No |
 /// +-------------------------+--------+-----+
 ///
@@ -5792,17 +5672,17 @@ enum MachineOutlinerMBBFlags {
 };
 
 struct OutlinerCosts {
-  int CallTailCall;
-  int FrameTailCall;
-  int CallThunk;
-  int FrameThunk;
-  int CallNoLRSave;
-  int FrameNoLRSave;
-  int CallRegSave;
-  int FrameRegSave;
-  int CallDefault;
-  int FrameDefault;
-  int SaveRestoreLROnStack;
+  const int CallTailCall;
+  const int FrameTailCall;
+  const int CallThunk;
+  const int FrameThunk;
+  const int CallNoLRSave;
+  const int FrameNoLRSave;
+  const int CallRegSave;
+  const int FrameRegSave;
+  const int CallDefault;
+  const int FrameDefault;
+  const int SaveRestoreLROnStack;
 
   OutlinerCosts(const ARMSubtarget &target)
       : CallTailCall(target.isThumb() ? 4 : 4),
@@ -5810,7 +5690,7 @@ struct OutlinerCosts {
         CallThunk(target.isThumb() ? 4 : 4),
         FrameThunk(target.isThumb() ? 0 : 0),
         CallNoLRSave(target.isThumb() ? 4 : 4),
-        FrameNoLRSave(target.isThumb() ? 2 : 4),
+        FrameNoLRSave(target.isThumb() ? 4 : 4),
         CallRegSave(target.isThumb() ? 8 : 12),
         FrameRegSave(target.isThumb() ? 2 : 4),
         CallDefault(target.isThumb() ? 8 : 12),
@@ -5818,25 +5698,26 @@ struct OutlinerCosts {
         SaveRestoreLROnStack(target.isThumb() ? 8 : 8) {}
 };
 
-Register
-ARMBaseInstrInfo::findRegisterToSaveLRTo(outliner::Candidate &C) const {
+unsigned
+ARMBaseInstrInfo::findRegisterToSaveLRTo(const outliner::Candidate &C) const {
+  assert(C.LRUWasSet && "LRU wasn't set?");
   MachineFunction *MF = C.getMF();
-  const TargetRegisterInfo &TRI = *MF->getSubtarget().getRegisterInfo();
-  const ARMBaseRegisterInfo *ARI =
-      static_cast<const ARMBaseRegisterInfo *>(&TRI);
+  const ARMBaseRegisterInfo *ARI = static_cast<const ARMBaseRegisterInfo *>(
+      MF->getSubtarget().getRegisterInfo());
 
   BitVector regsReserved = ARI->getReservedRegs(*MF);
   // Check if there is an available register across the sequence that we can
   // use.
-  for (Register Reg : ARM::rGPRRegClass) {
+  for (unsigned Reg : ARM::rGPRRegClass) {
     if (!(Reg < regsReserved.size() && regsReserved.test(Reg)) &&
         Reg != ARM::LR &&  // LR is not reserved, but don't use it.
         Reg != ARM::R12 && // R12 is not guaranteed to be preserved.
-        C.isAvailableAcrossAndOutOfSeq(Reg, TRI) &&
-        C.isAvailableInsideSeq(Reg, TRI))
+        C.LRU.available(Reg) && C.UsedInSequence.available(Reg))
       return Reg;
   }
-  return Register();
+
+  // No suitable register. Return 0.
+  return 0u;
 }
 
 // Compute liveness of LR at the point after the interval [I, E), which
@@ -5884,8 +5765,9 @@ outliner::OutlinedFunction ARMBaseInstrInfo::getOutliningCandidateInfo(
 
   // Compute liveness information for each candidate, and set FlagsSetInAll.
   const TargetRegisterInfo &TRI = getRegisterInfo();
-  for (outliner::Candidate &C : RepeatedSequenceLocs)
-    FlagsSetInAll &= C.Flags;
+  std::for_each(
+      RepeatedSequenceLocs.begin(), RepeatedSequenceLocs.end(),
+      [&FlagsSetInAll](outliner::Candidate &C) { FlagsSetInAll &= C.Flags; });
 
   // According to the ARM Procedure Call Standard, the following are
   // undefined on entry/exit from a function call:
@@ -5904,7 +5786,9 @@ outliner::OutlinedFunction ARMBaseInstrInfo::getOutliningCandidateInfo(
     // to compute liveness here.
     if (C.Flags & UnsafeRegsDead)
       return false;
-    return C.isAnyUnavailableAcrossOrOutOfSeq({ARM::R12, ARM::CPSR}, TRI);
+    C.initLRU(TRI);
+    LiveRegUnits LRU = C.LRU;
+    return (!LRU.available(ARM::R12) || !LRU.available(ARM::CPSR));
   };
 
   // Are there any candidates where those registers are live?
@@ -5919,48 +5803,6 @@ outliner::OutlinedFunction ARMBaseInstrInfo::getOutliningCandidateInfo(
       return outliner::OutlinedFunction();
   }
 
-  // We expect the majority of the outlining candidates to be in consensus with
-  // regard to return address sign and authentication, and branch target
-  // enforcement, in other words, partitioning according to all the four
-  // possible combinations of PAC-RET and BTI is going to yield one big subset
-  // and three small (likely empty) subsets. That allows us to cull incompatible
-  // candidates separately for PAC-RET and BTI.
-
-  // Partition the candidates in two sets: one with BTI enabled and one with BTI
-  // disabled. Remove the candidates from the smaller set. If they are the same
-  // number prefer the non-BTI ones for outlining, since they have less
-  // overhead.
-  auto NoBTI =
-      llvm::partition(RepeatedSequenceLocs, [](const outliner::Candidate &C) {
-        const ARMFunctionInfo &AFI = *C.getMF()->getInfo<ARMFunctionInfo>();
-        return AFI.branchTargetEnforcement();
-      });
-  if (std::distance(RepeatedSequenceLocs.begin(), NoBTI) >
-      std::distance(NoBTI, RepeatedSequenceLocs.end()))
-    RepeatedSequenceLocs.erase(NoBTI, RepeatedSequenceLocs.end());
-  else
-    RepeatedSequenceLocs.erase(RepeatedSequenceLocs.begin(), NoBTI);
-
-  if (RepeatedSequenceLocs.size() < 2)
-    return outliner::OutlinedFunction();
-
-  // Likewise, partition the candidates according to PAC-RET enablement.
-  auto NoPAC =
-      llvm::partition(RepeatedSequenceLocs, [](const outliner::Candidate &C) {
-        const ARMFunctionInfo &AFI = *C.getMF()->getInfo<ARMFunctionInfo>();
-        // If the function happens to not spill the LR, do not disqualify it
-        // from the outlining.
-        return AFI.shouldSignReturnAddress(true);
-      });
-  if (std::distance(RepeatedSequenceLocs.begin(), NoPAC) >
-      std::distance(NoPAC, RepeatedSequenceLocs.end()))
-    RepeatedSequenceLocs.erase(NoPAC, RepeatedSequenceLocs.end());
-  else
-    RepeatedSequenceLocs.erase(RepeatedSequenceLocs.begin(), NoPAC);
-
-  if (RepeatedSequenceLocs.size() < 2)
-    return outliner::OutlinedFunction();
-
   // At this point, we have only "safe" candidates to outline. Figure out
   // frame + call instruction information.
 
@@ -5974,24 +5816,6 @@ outliner::OutlinedFunction ARMBaseInstrInfo::getOutliningCandidateInfo(
       };
 
   OutlinerCosts Costs(Subtarget);
-
-  const auto &SomeMFI =
-      *RepeatedSequenceLocs.front().getMF()->getInfo<ARMFunctionInfo>();
-  // Adjust costs to account for the BTI instructions.
-  if (SomeMFI.branchTargetEnforcement()) {
-    Costs.FrameDefault += 4;
-    Costs.FrameNoLRSave += 4;
-    Costs.FrameRegSave += 4;
-    Costs.FrameTailCall += 4;
-    Costs.FrameThunk += 4;
-  }
-
-  // Adjust costs to account for sign and authentication instructions.
-  if (SomeMFI.shouldSignReturnAddress(true)) {
-    Costs.CallDefault += 8;          // +PAC instr, +AUT instr
-    Costs.SaveRestoreLROnStack += 8; // +PAC instr, +AUT instr
-  }
-
   unsigned FrameID = MachineOutlinerDefault;
   unsigned NumBytesToCreateFrame = Costs.FrameDefault;
 
@@ -6017,6 +5841,7 @@ outliner::OutlinedFunction ARMBaseInstrInfo::getOutliningCandidateInfo(
     std::vector<outliner::Candidate> CandidatesWithoutStackFixups;
 
     for (outliner::Candidate &C : RepeatedSequenceLocs) {
+      C.initLRU(TRI);
       // LR liveness is overestimated in return blocks, unless they end with a
       // tail call.
       const auto Last = C.getMBB()->rbegin();
@@ -6024,7 +5849,7 @@ outliner::OutlinedFunction ARMBaseInstrInfo::getOutliningCandidateInfo(
           C.getMBB()->isReturnBlock() && !Last->isCall()
               ? isLRAvailable(TRI, Last,
                               (MachineBasicBlock::reverse_iterator)C.front())
-              : C.isAvailableAcrossAndOutOfSeq(ARM::LR, TRI);
+              : C.LRU.available(ARM::LR);
       if (LRIsAvailable) {
         FrameID = MachineOutlinerNoLRSave;
         NumBytesNoStackCalls += Costs.CallNoLRSave;
@@ -6043,7 +5868,7 @@ outliner::OutlinedFunction ARMBaseInstrInfo::getOutliningCandidateInfo(
 
       // Is SP used in the sequence at all? If not, we don't have to modify
       // the stack, so we are guaranteed to get the same frame.
-      else if (C.isAvailableInsideSeq(ARM::SP, TRI)) {
+      else if (C.UsedInSequence.available(ARM::SP)) {
         NumBytesNoStackCalls += Costs.CallDefault;
         C.setCallInfo(MachineOutlinerDefault, Costs.CallDefault);
         CandidatesWithoutStackFixups.push_back(C);
@@ -6103,18 +5928,16 @@ bool ARMBaseInstrInfo::checkAndUpdateStackOffset(MachineInstr *MI,
 
   // Stack might be involved but addressing mode doesn't handle any offset.
   // Rq: AddrModeT1_[1|2|4] don't operate on SP
-  if (AddrMode == ARMII::AddrMode1 ||       // Arithmetic instructions
-      AddrMode == ARMII::AddrMode4 ||       // Load/Store Multiple
-      AddrMode == ARMII::AddrMode6 ||       // Neon Load/Store Multiple
-      AddrMode == ARMII::AddrModeT2_so ||   // SP can't be used as based register
-      AddrMode == ARMII::AddrModeT2_pc ||   // PCrel access
-      AddrMode == ARMII::AddrMode2 ||       // Used by PRE and POST indexed LD/ST
-      AddrMode == ARMII::AddrModeT2_i7 ||   // v8.1-M MVE
-      AddrMode == ARMII::AddrModeT2_i7s2 || // v8.1-M MVE
-      AddrMode == ARMII::AddrModeT2_i7s4 || // v8.1-M sys regs VLDR/VSTR
-      AddrMode == ARMII::AddrModeNone ||
-      AddrMode == ARMII::AddrModeT2_i8 ||   // Pre/Post inc instructions
-      AddrMode == ARMII::AddrModeT2_i8neg)  // Always negative imm
+  if (AddrMode == ARMII::AddrMode1        // Arithmetic instructions
+      || AddrMode == ARMII::AddrMode4     // Load/Store Multiple
+      || AddrMode == ARMII::AddrMode6     // Neon Load/Store Multiple
+      || AddrMode == ARMII::AddrModeT2_so // SP can't be used as based register
+      || AddrMode == ARMII::AddrModeT2_pc // PCrel access
+      || AddrMode == ARMII::AddrMode2     // Used by PRE and POST indexed LD/ST
+      || AddrMode == ARMII::AddrModeT2_i7 // v8.1-M MVE
+      || AddrMode == ARMII::AddrModeT2_i7s2 // v8.1-M MVE
+      || AddrMode == ARMII::AddrModeT2_i7s4 // v8.1-M sys regs VLDR/VSTR
+      || AddrMode == ARMII::AddrModeNone)
     return false;
 
   unsigned NumOps = MI->getDesc().getNumOperands();
@@ -6152,7 +5975,7 @@ bool ARMBaseInstrInfo::checkAndUpdateStackOffset(MachineInstr *MI,
     NumBits = 8;
     Scale = 2;
     break;
-  case ARMII::AddrModeT2_i8pos:
+  case ARMII::AddrModeT2_i8:
     NumBits = 8;
     break;
   case ARMII::AddrModeT2_i8s4:
@@ -6190,18 +6013,7 @@ bool ARMBaseInstrInfo::checkAndUpdateStackOffset(MachineInstr *MI,
   }
 
   return false;
-}
 
-void ARMBaseInstrInfo::mergeOutliningCandidateAttributes(
-    Function &F, std::vector<outliner::Candidate> &Candidates) const {
-  outliner::Candidate &C = Candidates.front();
-  // branch-target-enforcement is guaranteed to be consistent between all
-  // candidates, so we only need to look at one.
-  const Function &CFn = C.getMF()->getFunction();
-  if (CFn.hasFnAttribute("branch-target-enforcement"))
-    F.addFnAttr(CFn.getFnAttribute("branch-target-enforcement"));
-
-  ARMGenInstrInfo::mergeOutliningCandidateAttributes(F, Candidates);
 }
 
 bool ARMBaseInstrInfo::isFunctionSafeToOutlineFrom(
@@ -6236,8 +6048,8 @@ bool ARMBaseInstrInfo::isMBBSafeToOutlineFrom(MachineBasicBlock &MBB,
 
   LiveRegUnits LRU(getRegisterInfo());
 
-  for (MachineInstr &MI : llvm::reverse(MBB))
-    LRU.accumulate(MI);
+  std::for_each(MBB.rbegin(), MBB.rend(),
+                [&LRU](MachineInstr &MI) { LRU.accumulate(MI); });
 
   // Check if each of the unsafe registers are available...
   bool R12AvailableInBlock = LRU.available(ARM::R12);
@@ -6308,7 +6120,6 @@ ARMBaseInstrInfo::getOutliningType(MachineBasicBlock::iterator &MIT,
   // Be conservative with ARMv8.1 MVE instructions.
   if (Opc == ARM::t2BF_LabelPseudo || Opc == ARM::t2DoLoopStart ||
       Opc == ARM::t2DoLoopStartTP || Opc == ARM::t2WhileLoopStart ||
-      Opc == ARM::t2WhileLoopStartLR || Opc == ARM::t2WhileLoopStartTP ||
       Opc == ARM::t2LoopDec || Opc == ARM::t2LoopEnd ||
       Opc == ARM::t2LoopEndDec)
     return outliner::InstrType::Illegal;
@@ -6407,11 +6218,6 @@ ARMBaseInstrInfo::getOutliningType(MachineBasicBlock::iterator &MIT,
     // * LR is available in the range (No save/restore around call)
     // * The range doesn't include calls (No save/restore in outlined frame)
     // are true.
-    // These conditions also ensure correctness of the return address
-    // authentication - we insert sign and authentication instructions only if
-    // we save/restore LR on stack, but then this condition ensures that the
-    // outlined range does not modify the SP, therefore the SP value used for
-    // signing is the same as the one used for authentication.
     // FIXME: This is very restrictive; the flags check the whole block,
     // not just the bit we will try to outline.
     bool MightNeedStackFixUp =
@@ -6456,39 +6262,23 @@ void ARMBaseInstrInfo::fixupPostOutline(MachineBasicBlock &MBB) const {
 }
 
 void ARMBaseInstrInfo::saveLROnStack(MachineBasicBlock &MBB,
-                                     MachineBasicBlock::iterator It, bool CFI,
-                                     bool Auth) const {
-  int Align = std::max(Subtarget.getStackAlignment().value(), uint64_t(8));
-  assert(Align >= 8 && Align <= 256);
-  if (Auth) {
-    assert(Subtarget.isThumb2());
-    // Compute PAC in R12. Outlining ensures R12 is dead across the outlined
-    // sequence.
-    BuildMI(MBB, It, DebugLoc(), get(ARM::t2PAC))
-        .setMIFlags(MachineInstr::FrameSetup);
-    BuildMI(MBB, It, DebugLoc(), get(ARM::t2STRD_PRE), ARM::SP)
-        .addReg(ARM::R12, RegState::Kill)
-        .addReg(ARM::LR, RegState::Kill)
-        .addReg(ARM::SP)
-        .addImm(-Align)
-        .add(predOps(ARMCC::AL))
-        .setMIFlags(MachineInstr::FrameSetup);
-  } else {
-    unsigned Opc = Subtarget.isThumb() ? ARM::t2STR_PRE : ARM::STR_PRE_IMM;
-    BuildMI(MBB, It, DebugLoc(), get(Opc), ARM::SP)
-        .addReg(ARM::LR, RegState::Kill)
-        .addReg(ARM::SP)
-        .addImm(-Align)
-        .add(predOps(ARMCC::AL))
-        .setMIFlags(MachineInstr::FrameSetup);
-  }
+                                     MachineBasicBlock::iterator It) const {
+  unsigned Opc = Subtarget.isThumb() ? ARM::t2STR_PRE : ARM::STR_PRE_IMM;
+  int Align = -Subtarget.getStackAlignment().value();
+  BuildMI(MBB, It, DebugLoc(), get(Opc), ARM::SP)
+    .addReg(ARM::LR, RegState::Kill)
+    .addReg(ARM::SP)
+    .addImm(Align)
+    .add(predOps(ARMCC::AL));
+}
 
-  if (!CFI)
-    return;
-
+void ARMBaseInstrInfo::emitCFIForLRSaveOnStack(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator It) const {
   MachineFunction &MF = *MBB.getParent();
-
-  // Add a CFI, saying CFA is offset by Align bytes from SP.
+  const MCRegisterInfo *MRI = Subtarget.getRegisterInfo();
+  unsigned DwarfLR = MRI->getDwarfRegNum(ARM::LR, true);
+  int Align = Subtarget.getStackAlignment().value();
+  // Add a CFI saying the stack was moved down.
   int64_t StackPosEntry =
       MF.addFrameInst(MCCFIInstruction::cfiDefCfaOffset(nullptr, Align));
   BuildMI(MBB, It, DebugLoc(), get(ARM::CFI_INSTRUCTION))
@@ -6497,23 +6287,11 @@ void ARMBaseInstrInfo::saveLROnStack(MachineBasicBlock &MBB,
 
   // Add a CFI saying that the LR that we want to find is now higher than
   // before.
-  int LROffset = Auth ? Align - 4 : Align;
-  const MCRegisterInfo *MRI = Subtarget.getRegisterInfo();
-  unsigned DwarfLR = MRI->getDwarfRegNum(ARM::LR, true);
-  int64_t LRPosEntry = MF.addFrameInst(
-      MCCFIInstruction::createOffset(nullptr, DwarfLR, -LROffset));
+  int64_t LRPosEntry =
+      MF.addFrameInst(MCCFIInstruction::createOffset(nullptr, DwarfLR, -Align));
   BuildMI(MBB, It, DebugLoc(), get(ARM::CFI_INSTRUCTION))
       .addCFIIndex(LRPosEntry)
       .setMIFlags(MachineInstr::FrameSetup);
-  if (Auth) {
-    // Add a CFI for the location of the return adddress PAC.
-    unsigned DwarfRAC = MRI->getDwarfRegNum(ARM::RA_AUTH_CODE, true);
-    int64_t RACPosEntry = MF.addFrameInst(
-        MCCFIInstruction::createOffset(nullptr, DwarfRAC, -Align));
-    BuildMI(MBB, It, DebugLoc(), get(ARM::CFI_INSTRUCTION))
-        .addCFIIndex(RACPosEntry)
-        .setMIFlags(MachineInstr::FrameSetup);
-  }
 }
 
 void ARMBaseInstrInfo::emitCFIForLRSaveToReg(MachineBasicBlock &MBB,
@@ -6531,64 +6309,35 @@ void ARMBaseInstrInfo::emitCFIForLRSaveToReg(MachineBasicBlock &MBB,
       .setMIFlags(MachineInstr::FrameSetup);
 }
 
-void ARMBaseInstrInfo::restoreLRFromStack(MachineBasicBlock &MBB,
-                                          MachineBasicBlock::iterator It,
-                                          bool CFI, bool Auth) const {
-  int Align = Subtarget.getStackAlignment().value();
-  if (Auth) {
-    assert(Subtarget.isThumb2());
-    // Restore return address PAC and LR.
-    BuildMI(MBB, It, DebugLoc(), get(ARM::t2LDRD_POST))
-        .addReg(ARM::R12, RegState::Define)
-        .addReg(ARM::LR, RegState::Define)
-        .addReg(ARM::SP, RegState::Define)
-        .addReg(ARM::SP)
-        .addImm(Align)
-        .add(predOps(ARMCC::AL))
-        .setMIFlags(MachineInstr::FrameDestroy);
-    // LR authentication is after the CFI instructions, below.
-  } else {
-    unsigned Opc = Subtarget.isThumb() ? ARM::t2LDR_POST : ARM::LDR_POST_IMM;
-    MachineInstrBuilder MIB = BuildMI(MBB, It, DebugLoc(), get(Opc), ARM::LR)
-                                  .addReg(ARM::SP, RegState::Define)
-                                  .addReg(ARM::SP);
-    if (!Subtarget.isThumb())
-      MIB.addReg(0);
-    MIB.addImm(Subtarget.getStackAlignment().value())
-        .add(predOps(ARMCC::AL))
-        .setMIFlags(MachineInstr::FrameDestroy);
-  }
+void ARMBaseInstrInfo::restoreLRFromStack(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator It) const {
+  unsigned Opc = Subtarget.isThumb() ? ARM::t2LDR_POST : ARM::LDR_POST_IMM;
+  MachineInstrBuilder MIB = BuildMI(MBB, It, DebugLoc(), get(Opc), ARM::LR)
+    .addReg(ARM::SP, RegState::Define)
+    .addReg(ARM::SP);
+  if (!Subtarget.isThumb())
+    MIB.addReg(0);
+  MIB.addImm(Subtarget.getStackAlignment().value()).add(predOps(ARMCC::AL));
+}
 
-  if (CFI) {
-    // Now stack has moved back up...
-    MachineFunction &MF = *MBB.getParent();
-    const MCRegisterInfo *MRI = Subtarget.getRegisterInfo();
-    unsigned DwarfLR = MRI->getDwarfRegNum(ARM::LR, true);
-    int64_t StackPosEntry =
-        MF.addFrameInst(MCCFIInstruction::cfiDefCfaOffset(nullptr, 0));
-    BuildMI(MBB, It, DebugLoc(), get(ARM::CFI_INSTRUCTION))
-        .addCFIIndex(StackPosEntry)
-        .setMIFlags(MachineInstr::FrameDestroy);
+void ARMBaseInstrInfo::emitCFIForLRRestoreFromStack(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator It) const {
+  // Now stack has moved back up...
+  MachineFunction &MF = *MBB.getParent();
+  const MCRegisterInfo *MRI = Subtarget.getRegisterInfo();
+  unsigned DwarfLR = MRI->getDwarfRegNum(ARM::LR, true);
+  int64_t StackPosEntry =
+      MF.addFrameInst(MCCFIInstruction::cfiDefCfaOffset(nullptr, 0));
+  BuildMI(MBB, It, DebugLoc(), get(ARM::CFI_INSTRUCTION))
+      .addCFIIndex(StackPosEntry)
+      .setMIFlags(MachineInstr::FrameDestroy);
 
-    // ... and we have restored LR.
-    int64_t LRPosEntry =
-        MF.addFrameInst(MCCFIInstruction::createRestore(nullptr, DwarfLR));
-    BuildMI(MBB, It, DebugLoc(), get(ARM::CFI_INSTRUCTION))
-        .addCFIIndex(LRPosEntry)
-        .setMIFlags(MachineInstr::FrameDestroy);
-
-    if (Auth) {
-      unsigned DwarfRAC = MRI->getDwarfRegNum(ARM::RA_AUTH_CODE, true);
-      int64_t Entry =
-          MF.addFrameInst(MCCFIInstruction::createUndefined(nullptr, DwarfRAC));
-      BuildMI(MBB, It, DebugLoc(), get(ARM::CFI_INSTRUCTION))
-          .addCFIIndex(Entry)
-          .setMIFlags(MachineInstr::FrameDestroy);
-    }
-  }
-
-  if (Auth)
-    BuildMI(MBB, It, DebugLoc(), get(ARM::t2AUT));
+  // ... and we have restored LR.
+  int64_t LRPosEntry =
+      MF.addFrameInst(MCCFIInstruction::createRestore(nullptr, DwarfLR));
+  BuildMI(MBB, It, DebugLoc(), get(ARM::CFI_INSTRUCTION))
+      .addCFIIndex(LRPosEntry)
+      .setMIFlags(MachineInstr::FrameDestroy);
 }
 
 void ARMBaseInstrInfo::emitCFIForLRRestoreFromReg(
@@ -6644,11 +6393,8 @@ void ARMBaseInstrInfo::buildOutlinedFrame(
       MBB.addLiveIn(ARM::LR);
 
     // Insert a save before the outlined region
-    bool Auth = OF.Candidates.front()
-                    .getMF()
-                    ->getInfo<ARMFunctionInfo>()
-                    ->shouldSignReturnAddress(true);
-    saveLROnStack(MBB, It, true, Auth);
+    saveLROnStack(MBB, It);
+    emitCFIForLRSaveOnStack(MBB, It);
 
     // Fix up the instructions in the range, since we're going to modify the
     // stack.
@@ -6657,7 +6403,8 @@ void ARMBaseInstrInfo::buildOutlinedFrame(
     fixupPostOutline(MBB);
 
     // Insert a restore before the terminator for the function.  Restore LR.
-    restoreLRFromStack(MBB, Et, true, Auth);
+    restoreLRFromStack(MBB, Et);
+    emitCFIForLRRestoreFromStack(MBB, Et);
   }
 
   // If this is a tail call outlined function, then there's already a return.
@@ -6682,7 +6429,7 @@ void ARMBaseInstrInfo::buildOutlinedFrame(
 
 MachineBasicBlock::iterator ARMBaseInstrInfo::insertOutlinedCall(
     Module &M, MachineBasicBlock &MBB, MachineBasicBlock::iterator &It,
-    MachineFunction &MF, outliner::Candidate &C) const {
+    MachineFunction &MF, const outliner::Candidate &C) const {
   MachineInstrBuilder MIB;
   MachineBasicBlock::iterator CallPt;
   unsigned Opc;
@@ -6719,7 +6466,7 @@ MachineBasicBlock::iterator ARMBaseInstrInfo::insertOutlinedCall(
   const ARMFunctionInfo &AFI = *C.getMF()->getInfo<ARMFunctionInfo>();
   // Can we save to a register?
   if (C.CallConstructionID == MachineOutlinerRegSave) {
-    Register Reg = findRegisterToSaveLRTo(C);
+    unsigned Reg = findRegisterToSaveLRTo(C);
     assert(Reg != 0 && "No callee-saved register available?");
 
     // Save and restore LR from that register.
@@ -6736,10 +6483,13 @@ MachineBasicBlock::iterator ARMBaseInstrInfo::insertOutlinedCall(
   // We have the default case. Save and restore from SP.
   if (!MBB.isLiveIn(ARM::LR))
     MBB.addLiveIn(ARM::LR);
-  bool Auth = !AFI.isLRSpilled() && AFI.shouldSignReturnAddress(true);
-  saveLROnStack(MBB, It, !AFI.isLRSpilled(), Auth);
+  saveLROnStack(MBB, It);
+  if (!AFI.isLRSpilled())
+    emitCFIForLRSaveOnStack(MBB, It);
   CallPt = MBB.insert(It, CallMIB);
-  restoreLRFromStack(MBB, It, !AFI.isLRSpilled(), Auth);
+  restoreLRFromStack(MBB, It);
+  if (!AFI.isLRSpilled())
+    emitCFIForLRRestoreFromStack(MBB, It);
   It--;
   return CallPt;
 }
@@ -6749,8 +6499,8 @@ bool ARMBaseInstrInfo::shouldOutlineFromFunctionByDefault(
   return Subtarget.isMClass() && MF.getFunction().hasMinSize();
 }
 
-bool ARMBaseInstrInfo::isReallyTriviallyReMaterializable(
-    const MachineInstr &MI) const {
+bool ARMBaseInstrInfo::isReallyTriviallyReMaterializable(const MachineInstr &MI,
+                                                         AAResults *AA) const {
   // Try hard to rematerialize any VCTPs because if we spill P0, it will block
   // the tail predication conversion. This means that the element count
   // register has to be live for longer, but that has to be better than
@@ -6773,281 +6523,3 @@ unsigned llvm::getBLXpredOpcode(const MachineFunction &MF) {
                                                           : ARM::BLX_pred;
 }
 
-namespace {
-class ARMPipelinerLoopInfo : public TargetInstrInfo::PipelinerLoopInfo {
-  MachineInstr *EndLoop, *LoopCount;
-  MachineFunction *MF;
-  const TargetInstrInfo *TII;
-
-  // Bitset[0 .. MAX_STAGES-1] ... iterations needed
-  //       [LAST_IS_USE] : last reference to register in schedule is a use
-  //       [SEEN_AS_LIVE] : Normal pressure algorithm believes register is live
-  static int constexpr MAX_STAGES = 30;
-  static int constexpr LAST_IS_USE = MAX_STAGES;
-  static int constexpr SEEN_AS_LIVE = MAX_STAGES + 1;
-  typedef std::bitset<MAX_STAGES + 2> IterNeed;
-  typedef std::map<unsigned, IterNeed> IterNeeds;
-
-  void bumpCrossIterationPressure(RegPressureTracker &RPT,
-                                  const IterNeeds &CIN);
-  bool tooMuchRegisterPressure(SwingSchedulerDAG &SSD, SMSchedule &SMS);
-
-  // Meanings of the various stuff with loop types:
-  // t2Bcc:
-  //   EndLoop = branch at end of original BB that will become a kernel
-  //   LoopCount = CC setter live into branch
-  // t2LoopEnd:
-  //   EndLoop = branch at end of original BB
-  //   LoopCount = t2LoopDec
-public:
-  ARMPipelinerLoopInfo(MachineInstr *EndLoop, MachineInstr *LoopCount)
-      : EndLoop(EndLoop), LoopCount(LoopCount),
-        MF(EndLoop->getParent()->getParent()),
-        TII(MF->getSubtarget().getInstrInfo()) {}
-
-  bool shouldIgnoreForPipelining(const MachineInstr *MI) const override {
-    // Only ignore the terminator.
-    return MI == EndLoop || MI == LoopCount;
-  }
-
-  bool shouldUseSchedule(SwingSchedulerDAG &SSD, SMSchedule &SMS) override {
-    if (tooMuchRegisterPressure(SSD, SMS))
-      return false;
-
-    return true;
-  }
-
-  std::optional<bool> createTripCountGreaterCondition(
-      int TC, MachineBasicBlock &MBB,
-      SmallVectorImpl<MachineOperand> &Cond) override {
-
-    if (isCondBranchOpcode(EndLoop->getOpcode())) {
-      Cond.push_back(EndLoop->getOperand(1));
-      Cond.push_back(EndLoop->getOperand(2));
-      if (EndLoop->getOperand(0).getMBB() == EndLoop->getParent()) {
-        TII->reverseBranchCondition(Cond);
-      }
-      return {};
-    } else if (EndLoop->getOpcode() == ARM::t2LoopEnd) {
-      // General case just lets the unrolled t2LoopDec do the subtraction and
-      // therefore just needs to check if zero has been reached.
-      MachineInstr *LoopDec = nullptr;
-      for (auto &I : MBB.instrs())
-        if (I.getOpcode() == ARM::t2LoopDec)
-          LoopDec = &I;
-      assert(LoopDec && "Unable to find copied LoopDec");
-      // Check if we're done with the loop.
-      BuildMI(&MBB, LoopDec->getDebugLoc(), TII->get(ARM::t2CMPri))
-          .addReg(LoopDec->getOperand(0).getReg())
-          .addImm(0)
-          .addImm(ARMCC::AL)
-          .addReg(ARM::NoRegister);
-      Cond.push_back(MachineOperand::CreateImm(ARMCC::EQ));
-      Cond.push_back(MachineOperand::CreateReg(ARM::CPSR, false));
-      return {};
-    } else
-      llvm_unreachable("Unknown EndLoop");
-  }
-
-  void setPreheader(MachineBasicBlock *NewPreheader) override {}
-
-  void adjustTripCount(int TripCountAdjust) override {}
-
-  void disposed() override {}
-};
-
-void ARMPipelinerLoopInfo::bumpCrossIterationPressure(RegPressureTracker &RPT,
-                                                      const IterNeeds &CIN) {
-  // Increase pressure by the amounts in CrossIterationNeeds
-  for (const auto &N : CIN) {
-    int Cnt = N.second.count() - N.second[SEEN_AS_LIVE] * 2;
-    for (int I = 0; I < Cnt; ++I)
-      RPT.increaseRegPressure(Register(N.first), LaneBitmask::getNone(),
-                              LaneBitmask::getAll());
-  }
-  // Decrease pressure by the amounts in CrossIterationNeeds
-  for (const auto &N : CIN) {
-    int Cnt = N.second.count() - N.second[SEEN_AS_LIVE] * 2;
-    for (int I = 0; I < Cnt; ++I)
-      RPT.decreaseRegPressure(Register(N.first), LaneBitmask::getAll(),
-                              LaneBitmask::getNone());
-  }
-}
-
-bool ARMPipelinerLoopInfo::tooMuchRegisterPressure(SwingSchedulerDAG &SSD,
-                                                   SMSchedule &SMS) {
-  IterNeeds CrossIterationNeeds;
-
-  // Determine which values will be loop-carried after the schedule is
-  // applied
-
-  for (auto &SU : SSD.SUnits) {
-    const MachineInstr *MI = SU.getInstr();
-    int Stg = SMS.stageScheduled(const_cast<SUnit *>(&SU));
-    for (auto &S : SU.Succs)
-      if (MI->isPHI() && S.getKind() == SDep::Anti) {
-        Register Reg = S.getReg();
-        if (Register::isVirtualRegister(Reg))
-          CrossIterationNeeds.insert(std::make_pair(Reg.id(), IterNeed()))
-              .first->second.set(0);
-      } else if (S.isAssignedRegDep()) {
-        int OStg = SMS.stageScheduled(S.getSUnit());
-        if (OStg >= 0 && OStg != Stg) {
-          Register Reg = S.getReg();
-          if (Register::isVirtualRegister(Reg))
-            CrossIterationNeeds.insert(std::make_pair(Reg.id(), IterNeed()))
-                .first->second |= ((1 << (OStg - Stg)) - 1);
-        }
-      }
-  }
-
-  // Determine more-or-less what the proposed schedule (reversed) is going to
-  // be; it might not be quite the same because the within-cycle ordering
-  // created by SMSchedule depends upon changes to help with address offsets and
-  // the like.
-  std::vector<SUnit *> ProposedSchedule;
-  for (int Cycle = SMS.getFinalCycle(); Cycle >= SMS.getFirstCycle(); --Cycle)
-    for (int Stage = 0, StageEnd = SMS.getMaxStageCount(); Stage <= StageEnd;
-         ++Stage) {
-      std::deque<SUnit *> Instrs =
-          SMS.getInstructions(Cycle + Stage * SMS.getInitiationInterval());
-      std::sort(Instrs.begin(), Instrs.end(),
-                [](SUnit *A, SUnit *B) { return A->NodeNum > B->NodeNum; });
-      for (SUnit *SU : Instrs)
-        ProposedSchedule.push_back(SU);
-    }
-
-  // Learn whether the last use/def of each cross-iteration register is a use or
-  // def. If it is a def, RegisterPressure will implicitly increase max pressure
-  // and we do not have to add the pressure.
-  for (auto *SU : ProposedSchedule)
-    for (ConstMIBundleOperands OperI(*SU->getInstr()); OperI.isValid();
-         ++OperI) {
-      auto MO = *OperI;
-      if (!MO.isReg() || !MO.getReg())
-        continue;
-      Register Reg = MO.getReg();
-      auto CIter = CrossIterationNeeds.find(Reg.id());
-      if (CIter == CrossIterationNeeds.end() || CIter->second[LAST_IS_USE] ||
-          CIter->second[SEEN_AS_LIVE])
-        continue;
-      if (MO.isDef() && !MO.isDead())
-        CIter->second.set(SEEN_AS_LIVE);
-      else if (MO.isUse())
-        CIter->second.set(LAST_IS_USE);
-    }
-  for (auto &CI : CrossIterationNeeds)
-    CI.second.reset(LAST_IS_USE);
-
-  RegionPressure RecRegPressure;
-  RegPressureTracker RPTracker(RecRegPressure);
-  RegisterClassInfo RegClassInfo;
-  RegClassInfo.runOnMachineFunction(*MF);
-  RPTracker.init(MF, &RegClassInfo, nullptr, EndLoop->getParent(),
-                 EndLoop->getParent()->end(), false, false);
-  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
-
-  bumpCrossIterationPressure(RPTracker, CrossIterationNeeds);
-
-  for (auto *SU : ProposedSchedule) {
-    MachineBasicBlock::const_iterator CurInstI = SU->getInstr();
-    RPTracker.setPos(std::next(CurInstI));
-    RPTracker.recede();
-
-    // Track what cross-iteration registers would be seen as live
-    for (ConstMIBundleOperands OperI(*CurInstI); OperI.isValid(); ++OperI) {
-      auto MO = *OperI;
-      if (!MO.isReg() || !MO.getReg())
-        continue;
-      Register Reg = MO.getReg();
-      if (MO.isDef() && !MO.isDead()) {
-        auto CIter = CrossIterationNeeds.find(Reg.id());
-        if (CIter != CrossIterationNeeds.end()) {
-          CIter->second.reset(0);
-          CIter->second.reset(SEEN_AS_LIVE);
-        }
-      }
-    }
-    for (auto &S : SU->Preds) {
-      auto Stg = SMS.stageScheduled(SU);
-      if (S.isAssignedRegDep()) {
-        Register Reg = S.getReg();
-        auto CIter = CrossIterationNeeds.find(Reg.id());
-        if (CIter != CrossIterationNeeds.end()) {
-          auto Stg2 = SMS.stageScheduled(const_cast<SUnit *>(S.getSUnit()));
-          assert(Stg2 <= Stg && "Data dependence upon earlier stage");
-          if (Stg - Stg2 < MAX_STAGES)
-            CIter->second.set(Stg - Stg2);
-          CIter->second.set(SEEN_AS_LIVE);
-        }
-      }
-    }
-
-    bumpCrossIterationPressure(RPTracker, CrossIterationNeeds);
-  }
-
-  auto &P = RPTracker.getPressure().MaxSetPressure;
-  for (unsigned I = 0, E = P.size(); I < E; ++I)
-    if (P[I] > TRI->getRegPressureSetLimit(*MF, I)) {
-      return true;
-    }
-  return false;
-}
-
-} // namespace
-
-std::unique_ptr<TargetInstrInfo::PipelinerLoopInfo>
-ARMBaseInstrInfo::analyzeLoopForPipelining(MachineBasicBlock *LoopBB) const {
-  MachineBasicBlock::iterator I = LoopBB->getFirstTerminator();
-  MachineBasicBlock *Preheader = *LoopBB->pred_begin();
-  if (Preheader == LoopBB)
-    Preheader = *std::next(LoopBB->pred_begin());
-
-  if (I != LoopBB->end() && I->getOpcode() == ARM::t2Bcc) {
-    // If the branch is a Bcc, then the CPSR should be set somewhere within the
-    // block.  We need to determine the reaching definition of CPSR so that
-    // it can be marked as non-pipelineable, allowing the pipeliner to force
-    // it into stage 0 or give up if it cannot or will not do so.
-    MachineInstr *CCSetter = nullptr;
-    for (auto &L : LoopBB->instrs()) {
-      if (L.isCall())
-        return nullptr;
-      if (isCPSRDefined(L))
-        CCSetter = &L;
-    }
-    if (CCSetter)
-      return std::make_unique<ARMPipelinerLoopInfo>(&*I, CCSetter);
-    else
-      return nullptr; // Unable to find the CC setter, so unable to guarantee
-                      // that pipeline will work
-  }
-
-  // Recognize:
-  //   preheader:
-  //     %1 = t2DoopLoopStart %0
-  //   loop:
-  //     %2 = phi %1, <not loop>, %..., %loop
-  //     %3 = t2LoopDec %2, <imm>
-  //     t2LoopEnd %3, %loop
-
-  if (I != LoopBB->end() && I->getOpcode() == ARM::t2LoopEnd) {
-    for (auto &L : LoopBB->instrs())
-      if (L.isCall())
-        return nullptr;
-      else if (isVCTP(&L))
-        return nullptr;
-    Register LoopDecResult = I->getOperand(0).getReg();
-    MachineRegisterInfo &MRI = LoopBB->getParent()->getRegInfo();
-    MachineInstr *LoopDec = MRI.getUniqueVRegDef(LoopDecResult);
-    if (!LoopDec || LoopDec->getOpcode() != ARM::t2LoopDec)
-      return nullptr;
-    MachineInstr *LoopStart = nullptr;
-    for (auto &J : Preheader->instrs())
-      if (J.getOpcode() == ARM::t2DoLoopStart)
-        LoopStart = &J;
-    if (!LoopStart)
-      return nullptr;
-    return std::make_unique<ARMPipelinerLoopInfo>(&*I, LoopDec);
-  }
-  return nullptr;
-}

@@ -519,8 +519,6 @@ bool PPCVSXSwapRemoval::gatherVectorInstructions() {
       case PPC::XXSLDWI:
       case PPC::XSCVDPSPN:
       case PPC::XSCVSPDPN:
-      case PPC::MTVSCR:
-      case PPC::MFVSCR:
         break;
       }
     }

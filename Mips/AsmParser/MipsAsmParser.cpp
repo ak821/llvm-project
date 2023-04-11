@@ -25,7 +25,6 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrDesc.h"
-#include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCParser/MCAsmLexer.h"
 #include "llvm/MC/MCParser/MCAsmParser.h"
@@ -40,7 +39,6 @@
 #include "llvm/MC/MCSymbolELF.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/MC/SubtargetFeature.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
@@ -50,6 +48,7 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/SMLoc.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
@@ -179,9 +178,8 @@ class MipsAsmParser : public MCTargetAsmParser {
                                bool MatchingInlineAsm) override;
 
   /// Parse a register as used in CFI directives
-  bool parseRegister(MCRegister &RegNo, SMLoc &StartLoc,
-                     SMLoc &EndLoc) override;
-  OperandMatchResultTy tryParseRegister(MCRegister &RegNo, SMLoc &StartLoc,
+  bool ParseRegister(unsigned &RegNo, SMLoc &StartLoc, SMLoc &EndLoc) override;
+  OperandMatchResultTy tryParseRegister(unsigned &RegNo, SMLoc &StartLoc,
                                         SMLoc &EndLoc) override;
 
   bool parseParenSuffix(StringRef Name, OperandVector &Operands);
@@ -791,9 +789,6 @@ public:
       return MipsMCExpr::create(MipsMCExpr::MEK_TPREL_LO, E, Ctx);
     }
   }
-
-  bool areEqualRegs(const MCParsedAsmOperand &Op1,
-                    const MCParsedAsmOperand &Op2) const override;
 };
 
 /// MipsOperand - Instances of this class represent a parsed Mips machine
@@ -832,7 +827,8 @@ private:
   } Kind;
 
 public:
-  MipsOperand(KindTy K, MipsAsmParser &Parser) : Kind(K), AsmParser(Parser) {}
+  MipsOperand(KindTy K, MipsAsmParser &Parser)
+      : MCParsedAsmOperand(), Kind(K), AsmParser(Parser) {}
 
   ~MipsOperand() override {
     switch (Kind) {
@@ -1894,7 +1890,7 @@ bool MipsAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
     case Mips::BBIT1:
     case Mips::BBIT132:
       assert(hasCnMips() && "instruction only valid for octeon cpus");
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
 
     case Mips::BEQ:
     case Mips::BNE:
@@ -2076,7 +2072,7 @@ bool MipsAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
   case Mips::SDIV_MM:
     FirstOp = 0;
     SecondOp = 1;
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case Mips::SDivMacro:
   case Mips::DSDivMacro:
   case Mips::UDivMacro:
@@ -3417,10 +3413,10 @@ bool MipsAsmParser::expandLoadSingleImmToFPR(MCInst &Inst, SMLoc IDLoc,
   const MipsMCExpr *LoExpr =
       MipsMCExpr::create(MipsMCExpr::MEK_LO, LoSym, getContext());
 
-  getStreamer().switchSection(ReadOnlySection);
+  getStreamer().SwitchSection(ReadOnlySection);
   getStreamer().emitLabel(Sym, IDLoc);
   getStreamer().emitInt32(ImmOp32);
-  getStreamer().switchSection(CS);
+  getStreamer().SwitchSection(CS);
 
   if (emitPartialAddress(TOut, IDLoc, Sym))
     return true;
@@ -3469,11 +3465,11 @@ bool MipsAsmParser::expandLoadDoubleImmToGPR(MCInst &Inst, SMLoc IDLoc,
   const MipsMCExpr *LoExpr =
       MipsMCExpr::create(MipsMCExpr::MEK_LO, LoSym, getContext());
 
-  getStreamer().switchSection(ReadOnlySection);
+  getStreamer().SwitchSection(ReadOnlySection);
   getStreamer().emitLabel(Sym, IDLoc);
-  getStreamer().emitValueToAlignment(Align(8));
+  getStreamer().emitValueToAlignment(8);
   getStreamer().emitIntValue(ImmOp64, 8);
-  getStreamer().switchSection(CS);
+  getStreamer().SwitchSection(CS);
 
   unsigned TmpReg = getATReg(IDLoc);
   if (!TmpReg)
@@ -3552,11 +3548,11 @@ bool MipsAsmParser::expandLoadDoubleImmToFPR(MCInst &Inst, bool Is64FPU,
   const MipsMCExpr *LoExpr =
       MipsMCExpr::create(MipsMCExpr::MEK_LO, LoSym, getContext());
 
-  getStreamer().switchSection(ReadOnlySection);
+  getStreamer().SwitchSection(ReadOnlySection);
   getStreamer().emitLabel(Sym, IDLoc);
-  getStreamer().emitValueToAlignment(Align(8));
+  getStreamer().emitValueToAlignment(8);
   getStreamer().emitIntValue(ImmOp64, 8);
-  getStreamer().switchSection(CS);
+  getStreamer().SwitchSection(CS);
 
   if (emitPartialAddress(TOut, IDLoc, Sym))
     return true;
@@ -5668,7 +5664,7 @@ bool MipsAsmParser::expandMXTRAlias(MCInst &Inst, SMLoc IDLoc, MCStreamer &Out,
   switch (Inst.getOpcode()) {
     case Mips::MFTC0:
       IsMFTR = true;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case Mips::MTTC0:
       u = 0;
       rd = getRegisterForMxtrC0(Inst, IsMFTR);
@@ -5676,7 +5672,7 @@ bool MipsAsmParser::expandMXTRAlias(MCInst &Inst, SMLoc IDLoc, MCStreamer &Out,
       break;
     case Mips::MFTGPR:
       IsMFTR = true;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case Mips::MTTGPR:
       rd = Inst.getOperand(IsMFTR ? 1 : 0).getReg();
       break;
@@ -5685,7 +5681,7 @@ bool MipsAsmParser::expandMXTRAlias(MCInst &Inst, SMLoc IDLoc, MCStreamer &Out,
     case Mips::MFTACX:
     case Mips::MFTDSP:
       IsMFTR = true;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case Mips::MTTLO:
     case Mips::MTTHI:
     case Mips::MTTACX:
@@ -5695,7 +5691,7 @@ bool MipsAsmParser::expandMXTRAlias(MCInst &Inst, SMLoc IDLoc, MCStreamer &Out,
       break;
     case Mips::MFTHC1:
       h = 1;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case Mips::MFTC1:
       IsMFTR = true;
       rd = getRegisterForMxtrFP(Inst, IsMFTR);
@@ -5703,14 +5699,14 @@ bool MipsAsmParser::expandMXTRAlias(MCInst &Inst, SMLoc IDLoc, MCStreamer &Out,
       break;
     case Mips::MTTHC1:
       h = 1;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case Mips::MTTC1:
       rd = getRegisterForMxtrFP(Inst, IsMFTR);
       sel = 2;
       break;
     case Mips::CFTC1:
       IsMFTR = true;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case Mips::CTTC1:
       rd = getRegisterForMxtrFP(Inst, IsMFTR);
       sel = 3;
@@ -5942,9 +5938,6 @@ bool MipsAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
     return false;
   case Match_MissingFeature:
     Error(IDLoc, "instruction requires a CPU feature not currently enabled");
-    return true;
-  case Match_InvalidTiedOperand:
-    Error(IDLoc, "operand must match destination register");
     return true;
   case Match_InvalidOperand: {
     SMLoc ErrorLoc = IDLoc;
@@ -6399,12 +6392,12 @@ bool MipsAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic) {
   return true;
 }
 
-bool MipsAsmParser::parseRegister(MCRegister &RegNo, SMLoc &StartLoc,
+bool MipsAsmParser::ParseRegister(unsigned &RegNo, SMLoc &StartLoc,
                                   SMLoc &EndLoc) {
   return tryParseRegister(RegNo, StartLoc, EndLoc) != MatchOperand_Success;
 }
 
-OperandMatchResultTy MipsAsmParser::tryParseRegister(MCRegister &RegNo,
+OperandMatchResultTy MipsAsmParser::tryParseRegister(unsigned &RegNo,
                                                      SMLoc &StartLoc,
                                                      SMLoc &EndLoc) {
   SmallVector<std::unique_ptr<MCParsedAsmOperand>, 1> Operands;
@@ -6934,19 +6927,6 @@ bool MipsAsmParser::parseBracketSuffix(StringRef Name,
 
 static std::string MipsMnemonicSpellCheck(StringRef S, const FeatureBitset &FBS,
                                           unsigned VariantID = 0);
-
-bool MipsAsmParser::areEqualRegs(const MCParsedAsmOperand &Op1,
-                                 const MCParsedAsmOperand &Op2) const {
-  // This target-overriden function exists to maintain current behaviour for
-  // e.g.
-  //   dahi    $3, $3, 0x5678
-  // as tested in test/MC/Mips/mips64r6/valid.s.
-  // FIXME: Should this test actually fail with an error? If so, then remove
-  // this overloaded method.
-  if (!Op1.isReg() || !Op2.isReg())
-    return true;
-  return Op1.getReg() == Op2.getReg();
-}
 
 bool MipsAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
                                      SMLoc NameLoc, OperandVector &Operands) {
@@ -8200,7 +8180,7 @@ bool MipsAsmParser::parseRSectionDirective(StringRef Section) {
 
   MCSection *ELFSection = getContext().getELFSection(
       Section, ELF::SHT_PROGBITS, ELF::SHF_ALLOC);
-  getParser().getStreamer().switchSection(ELFSection);
+  getParser().getStreamer().SwitchSection(ELFSection);
 
   getParser().Lex(); // Eat EndOfStatement token.
   return false;
@@ -8218,7 +8198,7 @@ bool MipsAsmParser::parseSSectionDirective(StringRef Section, unsigned Type) {
 
   MCSection *ELFSection = getContext().getELFSection(
       Section, Type, ELF::SHF_WRITE | ELF::SHF_ALLOC | ELF::SHF_MIPS_GPREL);
-  getParser().getStreamer().switchSection(ELFSection);
+  getParser().getStreamer().SwitchSection(ELFSection);
 
   getParser().Lex(); // Eat EndOfStatement token.
   return false;

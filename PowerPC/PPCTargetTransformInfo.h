@@ -20,7 +20,6 @@
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/BasicTTIImpl.h"
 #include "llvm/CodeGen/TargetLowering.h"
-#include <optional>
 
 namespace llvm {
 
@@ -42,27 +41,24 @@ public:
       : BaseT(TM, F.getParent()->getDataLayout()), ST(TM->getSubtargetImpl(F)),
         TLI(ST->getTargetLowering()) {}
 
-  std::optional<Instruction *> instCombineIntrinsic(InstCombiner & IC,
-                                                    IntrinsicInst & II) const;
+  Optional<Instruction *> instCombineIntrinsic(InstCombiner &IC,
+                                               IntrinsicInst &II) const;
 
   /// \name Scalar TTI Implementations
   /// @{
 
   using BaseT::getIntImmCost;
-  InstructionCost getIntImmCost(const APInt &Imm, Type *Ty,
-                                TTI::TargetCostKind CostKind);
+  int getIntImmCost(const APInt &Imm, Type *Ty,
+                    TTI::TargetCostKind CostKind);
 
-  InstructionCost getIntImmCostInst(unsigned Opcode, unsigned Idx,
-                                    const APInt &Imm, Type *Ty,
-                                    TTI::TargetCostKind CostKind,
-                                    Instruction *Inst = nullptr);
-  InstructionCost getIntImmCostIntrin(Intrinsic::ID IID, unsigned Idx,
-                                      const APInt &Imm, Type *Ty,
-                                      TTI::TargetCostKind CostKind);
+  int getIntImmCostInst(unsigned Opcode, unsigned Idx, const APInt &Imm,
+                        Type *Ty, TTI::TargetCostKind CostKind,
+                        Instruction *Inst = nullptr);
+  int getIntImmCostIntrin(Intrinsic::ID IID, unsigned Idx, const APInt &Imm,
+                          Type *Ty, TTI::TargetCostKind CostKind);
 
-  InstructionCost getInstructionCost(const User *U,
-                                     ArrayRef<const Value *> Operands,
-                                     TTI::TargetCostKind CostKind);
+  unsigned getUserCost(const User *U, ArrayRef<const Value *> Operands,
+                       TTI::TargetCostKind CostKind);
 
   TTI::PopcntSupportKind getPopcntSupport(unsigned TyWidth);
   bool isHardwareLoopProfitable(Loop *L, ScalarEvolution &SE,
@@ -74,14 +70,13 @@ public:
                   TargetLibraryInfo *LibInfo);
   bool getTgtMemIntrinsic(IntrinsicInst *Inst, MemIntrinsicInfo &Info);
   void getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
-                               TTI::UnrollingPreferences &UP,
-                               OptimizationRemarkEmitter *ORE);
+                               TTI::UnrollingPreferences &UP);
   void getPeelingPreferences(Loop *L, ScalarEvolution &SE,
                              TTI::PeelingPreferences &PP);
-  bool isLSRCostLess(const TargetTransformInfo::LSRCost &C1,
-                     const TargetTransformInfo::LSRCost &C2);
+  bool isLSRCostLess(TargetTransformInfo::LSRCost &C1,
+                     TargetTransformInfo::LSRCost &C2);
   bool isNumRegsMajorCostOfLSR();
-  bool shouldBuildRelLookupTables() const;
+
   /// @}
 
   /// \name Vector TTI Implementations
@@ -98,61 +93,45 @@ public:
   unsigned getNumberOfRegisters(unsigned ClassID) const;
   unsigned getRegisterClassForType(bool Vector, Type *Ty = nullptr) const;
   const char* getRegisterClassName(unsigned ClassID) const;
-  TypeSize getRegisterBitWidth(TargetTransformInfo::RegisterKind K) const;
+  unsigned getRegisterBitWidth(bool Vector) const;
   unsigned getCacheLineSize() const override;
   unsigned getPrefetchDistance() const override;
   unsigned getMaxInterleaveFactor(unsigned VF);
-  InstructionCost vectorCostAdjustmentFactor(unsigned Opcode, Type *Ty1,
-                                             Type *Ty2);
-  InstructionCost getArithmeticInstrCost(
-      unsigned Opcode, Type *Ty, TTI::TargetCostKind CostKind,
-      TTI::OperandValueInfo Op1Info = {TTI::OK_AnyValue, TTI::OP_None},
-      TTI::OperandValueInfo Op2Info = {TTI::OK_AnyValue, TTI::OP_None},
+  int vectorCostAdjustment(int Cost, unsigned Opcode, Type *Ty1, Type *Ty2);
+  int getArithmeticInstrCost(
+      unsigned Opcode, Type *Ty,
+      TTI::TargetCostKind CostKind = TTI::TCK_RecipThroughput,
+      TTI::OperandValueKind Opd1Info = TTI::OK_AnyValue,
+      TTI::OperandValueKind Opd2Info = TTI::OK_AnyValue,
+      TTI::OperandValueProperties Opd1PropInfo = TTI::OP_None,
+      TTI::OperandValueProperties Opd2PropInfo = TTI::OP_None,
       ArrayRef<const Value *> Args = ArrayRef<const Value *>(),
       const Instruction *CxtI = nullptr);
-  InstructionCost getShuffleCost(TTI::ShuffleKind Kind, Type *Tp,
-                                 ArrayRef<int> Mask,
-                                 TTI::TargetCostKind CostKind, int Index,
-                                 Type *SubTp,
-                                 ArrayRef<const Value *> Args = std::nullopt);
-  InstructionCost getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src,
-                                   TTI::CastContextHint CCH,
-                                   TTI::TargetCostKind CostKind,
-                                   const Instruction *I = nullptr);
-  InstructionCost getCFInstrCost(unsigned Opcode, TTI::TargetCostKind CostKind,
-                                 const Instruction *I = nullptr);
-  InstructionCost getCmpSelInstrCost(unsigned Opcode, Type *ValTy, Type *CondTy,
-                                     CmpInst::Predicate VecPred,
-                                     TTI::TargetCostKind CostKind,
-                                     const Instruction *I = nullptr);
-  using BaseT::getVectorInstrCost;
-  InstructionCost getVectorInstrCost(unsigned Opcode, Type *Val, unsigned Index,
-                                     Value *Op0, Value *Op1);
-  InstructionCost
-  getMemoryOpCost(unsigned Opcode, Type *Src, MaybeAlign Alignment,
-                  unsigned AddressSpace, TTI::TargetCostKind CostKind,
-                  TTI::OperandValueInfo OpInfo = {TTI::OK_AnyValue, TTI::OP_None},
-                  const Instruction *I = nullptr);
-  InstructionCost getInterleavedMemoryOpCost(
+  int getShuffleCost(TTI::ShuffleKind Kind, Type *Tp, int Index, Type *SubTp);
+  int getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src,
+                       TTI::CastContextHint CCH, TTI::TargetCostKind CostKind,
+                       const Instruction *I = nullptr);
+  int getCFInstrCost(unsigned Opcode, TTI::TargetCostKind CostKind);
+  int getCmpSelInstrCost(unsigned Opcode, Type *ValTy, Type *CondTy,
+                         CmpInst::Predicate VecPred,
+                         TTI::TargetCostKind CostKind,
+                         const Instruction *I = nullptr);
+  int getVectorInstrCost(unsigned Opcode, Type *Val, unsigned Index);
+  int getMemoryOpCost(unsigned Opcode, Type *Src, MaybeAlign Alignment,
+                      unsigned AddressSpace,
+                      TTI::TargetCostKind CostKind,
+                      const Instruction *I = nullptr);
+  int getInterleavedMemoryOpCost(
       unsigned Opcode, Type *VecTy, unsigned Factor, ArrayRef<unsigned> Indices,
-      Align Alignment, unsigned AddressSpace, TTI::TargetCostKind CostKind,
+      Align Alignment, unsigned AddressSpace,
+      TTI::TargetCostKind CostKind = TTI::TCK_SizeAndLatency,
       bool UseMaskForCond = false, bool UseMaskForGaps = false);
-  InstructionCost getIntrinsicInstrCost(const IntrinsicCostAttributes &ICA,
-                                        TTI::TargetCostKind CostKind);
-  bool areTypesABICompatible(const Function *Caller, const Function *Callee,
-                             const ArrayRef<Type *> &Types) const;
-  bool hasActiveVectorLength(unsigned Opcode, Type *DataType,
-                             Align Alignment) const;
-  InstructionCost getVPMemoryOpCost(unsigned Opcode, Type *Src, Align Alignment,
-                                    unsigned AddressSpace,
-                                    TTI::TargetCostKind CostKind,
-                                    const Instruction *I = nullptr);
-  bool supportsTailCallFor(const CallBase *CB) const;
+  unsigned getIntrinsicInstrCost(const IntrinsicCostAttributes &ICA,
+                                 TTI::TargetCostKind CostKind);
 
-private:
-  // The following constant is used for estimating costs on power9.
-  static const InstructionCost::CostType P9PipelineFlushEstimate = 80;
-
+  bool areFunctionArgsABICompatible(const Function *Caller,
+                                    const Function *Callee,
+                                    SmallPtrSetImpl<Argument *> &Args) const;
   /// @}
 };
 

@@ -19,10 +19,9 @@
 #include "llvm/Support/CodeGen.h"
 
 namespace llvm {
+class NVPTXTargetMachine;
 class FunctionPass;
 class MachineFunctionPass;
-class NVPTXTargetMachine;
-class PassRegistry;
 
 namespace NVPTXCC {
 enum CondCodes {
@@ -138,12 +137,10 @@ enum CvtMode {
   RZ,
   RM,
   RP,
-  RNA,
 
   BASE_MASK = 0x0F,
   FTZ_FLAG = 0x10,
-  SAT_FLAG = 0x20,
-  RELU_FLAG = 0x40
+  SAT_FLAG = 0x20
 };
 }
 
@@ -175,8 +172,7 @@ enum CmpMode {
 };
 }
 }
-void initializeNVPTXDAGToDAGISelPass(PassRegistry &);
-} // namespace llvm
+} // end namespace llvm;
 
 // Defines symbolic names for NVPTX registers.  This defines a mapping from
 // register name to register number.
@@ -185,7 +181,6 @@ void initializeNVPTXDAGToDAGISelPass(PassRegistry &);
 
 // Defines symbolic names for the NVPTX instructions.
 #define GET_INSTRINFO_ENUM
-#define GET_INSTRINFO_MC_HELPER_DECLS
 #include "NVPTXGenInstrInfo.inc"
 
 #endif

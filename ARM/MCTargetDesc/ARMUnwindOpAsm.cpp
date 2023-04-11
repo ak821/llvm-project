@@ -64,11 +64,8 @@ namespace {
 } // end anonymous namespace
 
 void UnwindOpcodeAssembler::EmitRegSave(uint32_t RegSave) {
-  if (RegSave == 0u) {
-    // That's the special case for RA PAC.
-    EmitInt8(ARM::EHABI::UNWIND_OPCODE_POP_RA_AUTH_CODE);
+  if (RegSave == 0u)
     return;
-  }
 
   // One byte opcode to save register r14 and r11-r4
   if (RegSave & (1u << 4)) {

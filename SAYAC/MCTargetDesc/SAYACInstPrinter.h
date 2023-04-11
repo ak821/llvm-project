@@ -57,6 +57,9 @@ public:
   // void printRegName(raw_ostream &O, unsigned RegNo) const override;
   void printInst(const MCInst *MI, uint64_t Address, StringRef Annot,
                  const MCSubtargetInfo &STI, raw_ostream &O) override;
+          
+  void printAddrModeMemSrc(const MCInst *MI, unsigned OpNum,
+                            const MCSubtargetInfo &STI, raw_ostream &O);
 };
 
 } // end namespace llvm

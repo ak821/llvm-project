@@ -9,14 +9,12 @@ add_llvm_component_library(LLVMPowerPCDesc
   PPCELFObjectWriter.cpp
   PPCXCOFFObjectWriter.cpp
   PPCELFStreamer.cpp
-  PPCXCOFFStreamer.cpp
 
   LINK_COMPONENTS
   MC
   PowerPCInfo
   Support
   BinaryFormat
-  TargetParser
 
   ADD_TO_COMPONENT
   PowerPC

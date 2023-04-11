@@ -10,7 +10,6 @@ add_llvm_component_library(LLVMAArch64AsmParser
   MC
   MCParser
   Support
-  TargetParser
 
   ADD_TO_COMPONENT
   AArch64

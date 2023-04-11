@@ -15,7 +15,8 @@
 using namespace llvm;
 
 AMDGPUMCAsmInfo::AMDGPUMCAsmInfo(const Triple &TT,
-                                 const MCTargetOptions &Options) {
+                                 const MCTargetOptions &Options)
+    : MCAsmInfoELF() {
   CodePointerSize = (TT.getArch() == Triple::amdgcn) ? 8 : 4;
   StackGrowsUp = true;
   HasSingleParameterDotFile = false;
@@ -27,6 +28,7 @@ AMDGPUMCAsmInfo::AMDGPUMCAsmInfo(const Triple &TT,
   MaxInstLength = (TT.getArch() == Triple::amdgcn) ? 20 : 16;
   SeparatorString = "\n";
   CommentString = ";";
+  PrivateLabelPrefix = "";
   InlineAsmStart = ";#ASMSTART";
   InlineAsmEnd = ";#ASMEND";
 
@@ -40,7 +42,6 @@ AMDGPUMCAsmInfo::AMDGPUMCAsmInfo(const Triple &TT,
   HasNoDeadStrip = true;
   //===--- Dwarf Emission Directives -----------------------------------===//
   SupportsDebugInformation = true;
-  UsesCFIForDebug = true;
   DwarfRegNumForCFI = true;
 
   UseIntegratedAssembler = false;

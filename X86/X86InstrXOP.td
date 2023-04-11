@@ -13,11 +13,11 @@
 multiclass xop2op<bits<8> opc, string OpcodeStr, Intrinsic Int> {
   def rr : IXOP<opc, MRMSrcReg, (outs VR128:$dst), (ins VR128:$src),
            !strconcat(OpcodeStr, "\t{$src, $dst|$dst, $src}"),
-           [(set VR128:$dst, (Int VR128:$src))]>, XOP, Sched<[SchedWriteVecALU.XMM]>;
+           [(set VR128:$dst, (Int VR128:$src))]>, XOP, Sched<[SchedWritePHAdd.XMM]>;
   def rm : IXOP<opc, MRMSrcMem, (outs VR128:$dst), (ins i128mem:$src),
            !strconcat(OpcodeStr, "\t{$src, $dst|$dst, $src}"),
            [(set VR128:$dst, (Int (load addr:$src)))]>, XOP,
-           Sched<[SchedWriteVecALU.XMM.Folded, SchedWriteVecALU.XMM.ReadAfterFold]>;
+           Sched<[SchedWritePHAdd.XMM.Folded, SchedWritePHAdd.XMM.ReadAfterFold]>;
 }
 
 let ExeDomain = SSEPackedInt in {

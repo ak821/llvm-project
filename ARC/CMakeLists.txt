@@ -36,7 +36,6 @@ add_llvm_target(ARCCodeGen
   SelectionDAG
   Support
   Target
-  TargetParser
   TransformUtils
   ARCDesc
   ARCInfo

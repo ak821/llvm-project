@@ -20,6 +20,8 @@
 namespace llvm {
 
 template <typename T> class ArrayRef;
+class DataLayout;
+class MachineRegisterInfo;
 class X86TargetLowering;
 
 class X86CallLowering : public CallLowering {
@@ -37,9 +39,14 @@ public:
   bool lowerCall(MachineIRBuilder &MIRBuilder,
                  CallLoweringInfo &Info) const override;
 
-  bool canLowerReturn(MachineFunction &MF, CallingConv::ID CallConv,
-                      SmallVectorImpl<BaseArgInfo> &Outs,
-                      bool IsVarArg) const override;
+private:
+  /// A function of this type is used to perform value split action.
+  using SplitArgTy = std::function<void(ArrayRef<Register>)>;
+
+  bool splitToValueTypes(const ArgInfo &OrigArgInfo,
+                         SmallVectorImpl<ArgInfo> &SplitArgs,
+                         const DataLayout &DL, MachineRegisterInfo &MRI,
+                         SplitArgTy SplitArg) const;
 };
 
 } // end namespace llvm

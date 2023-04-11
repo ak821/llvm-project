@@ -380,6 +380,8 @@ const char *SAYACTargetLowering::getTargetNodeName(unsigned Opcode) const {
   case Opc:                                                                    \
     return #Opc
     OPCODE(SAYACISD::RET_FLAG);
+    OPCODE(SAYACISD::LOAD_SYM);
+    OPCODE(SAYACISD::MOVEi16);
     OPCODE(SAYACISD::CALL);
     OPCODE(SAYACISD::CLR);
     OPCODE(SAYACISD::SET);
@@ -393,4 +395,13 @@ const char *SAYACTargetLowering::getTargetNodeName(unsigned Opcode) const {
   default:
     return nullptr;
   }
+}
+
+SDValue SAYACTargetLowering::LowerGlobalAddress(SDValue Op, SelectionDAG& DAG) const
+{
+  EVT VT = Op.getValueType();
+  GlobalAddressSDNode *GlobalAddr = cast<GlobalAddressSDNode>(Op.getNode());
+  SDValue TargetAddr =
+      DAG.getTargetGlobalAddress(GlobalAddr->getGlobal(), Op, MVT::i16);
+  return DAG.getNode(SAYACISD::LOAD_SYM, Op, VT, TargetAddr);
 }

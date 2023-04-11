@@ -21,6 +21,7 @@
 #include "WebAssemblyRuntimeLibcallSignatures.h"
 #include "WebAssemblySubtarget.h"
 #include "llvm/CodeGen/RuntimeLibcalls.h"
+#include "llvm/Support/ManagedStatic.h"
 
 using namespace llvm;
 
@@ -71,7 +72,6 @@ enum RuntimeLibcallSignature {
   i64_i64_func_i64_i64_i64_i64_iPTR,
   i64_i64_i64_i64_func_i64_i64_i64_i64,
   i64_i64_func_i64_i64_i32,
-  iPTR_func_i32,
   iPTR_func_iPTR_i32_iPTR,
   iPTR_func_iPTR_iPTR_iPTR,
   f32_func_f32_f32_f32,
@@ -330,7 +330,7 @@ struct RuntimeLibcallSignatureTable {
     Table[RTLIB::STACKPROTECTOR_CHECK_FAIL] = func;
 
     // Return address handling
-    Table[RTLIB::RETURN_ADDRESS] = iPTR_func_i32;
+    Table[RTLIB::RETURN_ADDRESS] = i32_func_i32;
 
     // Element-wise Atomic memory
     // TODO: Fix these when we implement atomic support
@@ -482,13 +482,10 @@ struct RuntimeLibcallSignatureTable {
   }
 };
 
-RuntimeLibcallSignatureTable &getRuntimeLibcallSignatures() {
-  static RuntimeLibcallSignatureTable RuntimeLibcallSignatures;
-  return RuntimeLibcallSignatures;
-}
+ManagedStatic<RuntimeLibcallSignatureTable> RuntimeLibcallSignatures;
 
 // Maps libcall names to their RTLIB::Libcall number. Builds the map in a
-// constructor for use with a static variable
+// constructor for use with ManagedStatic
 struct StaticLibcallNameMap {
   StringMap<RTLIB::Libcall> Map;
   StaticLibcallNameMap() {
@@ -499,8 +496,7 @@ struct StaticLibcallNameMap {
     };
     for (const auto &NameLibcall : NameLibcalls) {
       if (NameLibcall.first != nullptr &&
-          getRuntimeLibcallSignatures().Table[NameLibcall.second] !=
-              unsupported) {
+          RuntimeLibcallSignatures->Table[NameLibcall.second] != unsupported) {
         assert(Map.find(NameLibcall.first) == Map.end() &&
                "duplicate libcall names in name map");
         Map[NameLibcall.first] = NameLibcall.second;
@@ -527,7 +523,7 @@ void llvm::getLibcallSignature(const WebAssemblySubtarget &Subtarget,
   wasm::ValType PtrTy =
       Subtarget.hasAddr64() ? wasm::ValType::I64 : wasm::ValType::I32;
 
-  auto &Table = getRuntimeLibcallSignatures().Table;
+  auto &Table = RuntimeLibcallSignatures->Table;
   switch (Table[LC]) {
   case func:
     break;
@@ -786,10 +782,6 @@ void llvm::getLibcallSignature(const WebAssemblySubtarget &Subtarget,
     Params.push_back(wasm::ValType::I64);
     Params.push_back(wasm::ValType::I32);
     break;
-  case iPTR_func_i32:
-    Rets.push_back(PtrTy);
-    Params.push_back(wasm::ValType::I32);
-    break;
   case iPTR_func_iPTR_i32_iPTR:
     Rets.push_back(PtrTy);
     Params.push_back(PtrTy);
@@ -893,19 +885,18 @@ void llvm::getLibcallSignature(const WebAssemblySubtarget &Subtarget,
   }
 }
 
+static ManagedStatic<StaticLibcallNameMap> LibcallNameMap;
 // TODO: If the RTLIB::Libcall-taking flavor of GetSignature remains unsed
 // other than here, just roll its logic into this version.
 void llvm::getLibcallSignature(const WebAssemblySubtarget &Subtarget,
-                               StringRef Name,
+                               const char *Name,
                                SmallVectorImpl<wasm::ValType> &Rets,
                                SmallVectorImpl<wasm::ValType> &Params) {
-  static StaticLibcallNameMap LibcallNameMap;
-  auto &Map = LibcallNameMap.Map;
+  auto &Map = LibcallNameMap->Map;
   auto Val = Map.find(Name);
 #ifndef NDEBUG
   if (Val == Map.end()) {
-    auto message = std::string("unexpected runtime library name: ") +
-                   std::string(Name);
+    auto message = std::string("unexpected runtime library name: ") + Name;
     llvm_unreachable(message.c_str());
   }
 #endif

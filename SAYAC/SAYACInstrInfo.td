@@ -53,12 +53,6 @@ def LO8 : SDNodeXForm<imm, [{
   return CurDAG->getTargetConstant(Value, SDLoc(N), MVT::i16);
 }]>;
 
-// Bits 8-15 (counting from the lsb).
-def HI8 : SDNodeXForm<imm, [{
-  uint32_t Value = (N->getZExtValue() & 0x000000000000FF00ULL) >> 8;
-  return CurDAG->getTargetConstant(Value, SDLoc(N), MVT::i16);
-}]>;
-
 def U8Imm : ImmediateAsmOperand<"U8Imm">;
 def U5Imm : ImmediateAsmOperand<"U5Imm">;
 
@@ -91,22 +85,97 @@ defm imm16zx5 : Immediate<i16, [{
   return (N->getZExtValue() & ~0x000000000000001fULL) == 0;
 }], NOOP_SDNodeXForm, "U5Imm">;
 
+def simm16     : ImmLeaf<i16, [{return isInt<16>(Imm);}]>;
 
-// def ADDri : F_LAI<0b1011,
-//                  (outs GPROpnd:$rd), (ins GPROpnd:$rd, imm16zx8:$imm8),
-//                  "adi $rd $imm8",
-//                  [(set GPROpnd:$rd, (add GPROpnd:$rd, imm16zx8:$imm8) )]
-//                  >;
+// Extract least significant 8 bits from an immediate value and sign extend
+// them.
+def LO8Sext : SDNodeXForm<imm, [{
+  return CurDAG->getTargetConstant(SignExtend32<8>(N->getZExtValue()),
+                                   SDLoc(N), N->getValueType(0));
+}]>;
 
-def LDR: F_Load<0b00, (outs GPROpnd:$rd), (ins GPROpnd:$rs1),
-                  "ldr $rd $rs1",
-                  []
+// Extract the most significant 8 bits from an immediate value. Add 1 if bit
+// 7 is 1, to compensate for the low 8 bits in the matching immediate addi
+// or ld/st being negative.
+def HI8 : SDNodeXForm<imm, [{
+  return CurDAG->getTargetConstant(((N->getZExtValue()+0x80) >> 8) & 0xff,
+                                   SDLoc(N), N->getValueType(0));
+}]>;
+
+class ImmAsmOperand<string prefix, int width, string suffix="">: AsmOperandClass {
+  let Name = prefix # "ImmXLen" # suffix;
+  let RenderMethod = "addImmOperands";
+  // let DiagnosticType = !strconcat("Invalid", Name);
+}
+
+class UImmAsmOperand<int width, string suffix=""> : 
+                        ImmAsmOperand<"U", width, suffix> {
+}
+
+def uimm8_m: Operand<i16> {
+  let EncoderMethod = "getImmOpValue";
+  let ParserMatchClass = UImmAsmOperand<8, "m">;
+}
+
+let hasSideEffects = 0, mayLoad = 0, mayStore = 0,
+isReMaterializable = 1, isAsCheapAsAMove = 1 in {
+def MSI : MOV<0b0101, (outs GPROpnd:$rd), (ins uimm8_m:$imm8),
+                  "msi $rd, $imm8", []>;
+
+def MHI : MOV<0b0110, (outs GPROpnd: $rd), (ins uimm8_m:$imm8),
+                "mhi $rd $imm8", []>;
+
+}
+
+def ADDri : F_LAI<0b1011,
+                 (outs GPROpnd:$rd), (ins GPROpnd: $rs, imm16zx8:$imm8),
+                 "adi $rs $imm8",
+                 [(set GPROpnd:$rd, (add GPROpnd:$rs, imm16zx8:$imm8))]
+                 > {
+                  let Constraints = "$rd = $rs";
+                 }
+
+// def : Pattern<(simm16:$imm), 
+//                 [(MSI GPROpnd: $rd, (LO8Sext imm:$imm)), (MHI (HI8 imm: $imm))] >;
+
+def : Pat<(simm16:$imm), (MSI (LO8Sext imm:$imm))>;
+
+def MoveImm16Ty : SDTypeProfile<1, 1, [
+  SDTCisSameAs<0, 1>, SDTCisInt<0>
+]>;
+
+
+def load_sym : SDNode<"SAYACISD::LOAD_SYM", SDTIntUnaryOp>;
+
+def movei16 : SDNode<"SAYACISD::MOVEi16", MoveImm16Ty>;
+
+
+def MOVi16 : InstSAYAC<(outs GPROpnd:$rd), (ins i16imm:$src), "pibopuni $rd $src",
+                     [(set i16: $rd, (movei16 imm:$src))]> {
+  let isPseudo = 1;
+}
+
+def memsrc : Operand<i16> {
+  let MIOperandInfo = (ops GPROpnd, i16imm);
+  let PrintMethod = "printAddrModeMemSrc";
+  let EncoderMethod = "getMemSrcValue";
+}
+
+def addr : ComplexPattern<iPTR, 2, "SelectAddr", [], []>;
+
+let mayLoad = 1 in 
+def LDR: F_Load<0b00, (outs GPROpnd:$rd), (ins memsrc:$addr),
+                  "ldr $rd $addr",
+                  [(set i16: $rd, (load addr:$addr))]
                   >;
 
-def STR: F_Store<0b00, (outs GPROpnd:$rd), (ins GPROpnd:$rs1),
-                  "str $rd $rs1",
-                  []
+let mayStore = 1 in
+def STR: F_Store<0b00, (outs GPROpnd:$rd), (ins memsrc:$addr),
+                  "str $rd $addr",
+                  [(store i16:$rd, addr:$addr)]
                   >;
+
+def : Pattern<(i16 (load_sym tglobaladdr:$addr)),  [(MOVi16 $addr)]>;
 
 
 class PCRelAsmOperand<string size> : ImmediateAsmOperand<"PCRel"#size> {

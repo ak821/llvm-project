@@ -103,7 +103,6 @@ struct AMDGPUFunctionArgInfo {
     KERNARG_SEGMENT_PTR =  3,
     DISPATCH_ID         =  4,
     FLAT_SCRATCH_INIT   =  5,
-    LDS_KERNEL_ID       =  6, // LLVM internal, not part of the ABI
     WORKGROUP_ID_X      = 10,
     WORKGROUP_ID_Y      = 11,
     WORKGROUP_ID_Z      = 12,
@@ -129,7 +128,6 @@ struct AMDGPUFunctionArgInfo {
   ArgDescriptor DispatchID;
   ArgDescriptor FlatScratchInit;
   ArgDescriptor PrivateSegmentSize;
-  ArgDescriptor LDSKernelId;
 
   // System SGPRs in kernels.
   ArgDescriptor WorkGroupIDX;
@@ -145,8 +143,7 @@ struct AMDGPUFunctionArgInfo {
   // Input registers for non-HSA ABI
   ArgDescriptor ImplicitBufferPtr;
 
-  // VGPRs inputs. For entry functions these are either v0, v1 and v2 or packed
-  // into v0, 10 bits per dimension if packed-tid is set.
+  // VGPRs inputs. These are always v0, v1 and v2 for entry functions.
   ArgDescriptor WorkItemIDX;
   ArgDescriptor WorkItemIDY;
   ArgDescriptor WorkItemIDZ;

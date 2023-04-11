@@ -36,6 +36,8 @@ enum NodeType : unsigned {
   // is the target address.  The arguments start at operand 2.
   // There is an optional glue operand at the end.
   CALL,
+  LOAD_SYM,
+  MOVEi16,
 
   // Bit-field instructions.
   CLR,
@@ -78,6 +80,9 @@ public:
 
   SDValue LowerCall(CallLoweringInfo &CLI,
                     SmallVectorImpl<SDValue> &InVals) const override;
+
+  // LowerGlobalAddress - Emit a constant load to the global address.
+  SDValue LowerGlobalAddress(SDValue Op, SelectionDAG& DAG) const;
 };
 
 } // end namespace llvm

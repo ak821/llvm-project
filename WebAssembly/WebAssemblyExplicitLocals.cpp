@@ -16,11 +16,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "MCTargetDesc/WebAssemblyMCTargetDesc.h"
-#include "Utils/WebAssemblyUtilities.h"
 #include "WebAssembly.h"
 #include "WebAssemblyDebugValueManager.h"
 #include "WebAssemblyMachineFunctionInfo.h"
 #include "WebAssemblySubtarget.h"
+#include "WebAssemblyUtilities.h"
 #include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -239,10 +239,8 @@ bool WebAssemblyExplicitLocals::runOnMachineFunction(MachineFunction &MF) {
     Changed = true;
   }
 
-  // Start assigning local numbers after the last parameter and after any
-  // already-assigned locals.
+  // Start assigning local numbers after the last parameter.
   unsigned CurLocal = static_cast<unsigned>(MFI.getParams().size());
-  CurLocal += static_cast<unsigned>(MFI.getLocals().size());
 
   // Precompute the set of registers that are unused, so that we can insert
   // drops to their defs.
@@ -252,7 +250,8 @@ bool WebAssemblyExplicitLocals::runOnMachineFunction(MachineFunction &MF) {
 
   // Visit each instruction in the function.
   for (MachineBasicBlock &MBB : MF) {
-    for (MachineInstr &MI : llvm::make_early_inc_range(MBB)) {
+    for (MachineBasicBlock::iterator I = MBB.begin(), E = MBB.end(); I != E;) {
+      MachineInstr &MI = *I++;
       assert(!WebAssembly::isArgument(MI.getOpcode()));
 
       if (MI.isDebugInstr() || MI.isLabel())
@@ -379,14 +378,9 @@ bool WebAssemblyExplicitLocals::runOnMachineFunction(MachineFunction &MF) {
         const TargetRegisterClass *RC = MRI.getRegClass(OldReg);
         Register NewReg = MRI.createVirtualRegister(RC);
         unsigned Opc = getLocalGetOpcode(RC);
-        // Use a InsertPt as our DebugLoc, since MI may be discontinuous from
-        // the where this local is being inserted, causing non-linear stepping
-        // in the debugger or function entry points where variables aren't live
-        // yet. Alternative is previous instruction, but that is strictly worse
-        // since it can point at the previous statement.
-        // See crbug.com/1251909, crbug.com/1249745
-        InsertPt = BuildMI(MBB, InsertPt, InsertPt->getDebugLoc(),
-                           TII->get(Opc), NewReg).addImm(LocalId);
+        InsertPt =
+            BuildMI(MBB, InsertPt, MI.getDebugLoc(), TII->get(Opc), NewReg)
+                .addImm(LocalId);
         MO.setReg(NewReg);
         MFI.stackifyVReg(MRI, NewReg);
         Changed = true;
@@ -406,7 +400,7 @@ bool WebAssemblyExplicitLocals::runOnMachineFunction(MachineFunction &MF) {
   // TODO: Sort the locals for better compression.
   MFI.setNumLocals(CurLocal - MFI.getParams().size());
   for (unsigned I = 0, E = MRI.getNumVirtRegs(); I < E; ++I) {
-    Register Reg = Register::index2VirtReg(I);
+    unsigned Reg = Register::index2VirtReg(I);
     auto RL = Reg2Local.find(Reg);
     if (RL == Reg2Local.end() || RL->second < MFI.getParams().size())
       continue;

@@ -40,13 +40,13 @@ BitVector SAYACRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   BitVector Reserved(getNumRegs());
 
   // R2 is the stack pointer.
-  Reserved.set(SAYAC::R2);
+  // Reserved.set(SAYAC::R2);
 
   // R0 is wired to zero
-  Reserved.set(SAYAC::R0);
+  // Reserved.set(SAYAC::R0);
 
   // R15 stores flag bits
-  Reserved.set(SAYAC::R15);
+  // Reserved.set(SAYAC::R15);
 
   return Reserved;
 }

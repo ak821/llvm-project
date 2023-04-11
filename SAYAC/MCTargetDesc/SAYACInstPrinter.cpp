@@ -115,3 +115,18 @@ void SAYACInstPrinter::printInst(const MCInst *MI, uint64_t Address,
   printInstruction(MI, Address, STI, O);
   printAnnotation(O, Annot);
                                 }
+
+// Print a 'memsrc' operand which is a (Register, Offset) pair.
+void SAYACInstPrinter::printAddrModeMemSrc(const MCInst *MI, unsigned OpNum,
+                                         const MCSubtargetInfo &STI, raw_ostream &O) {
+  const MCOperand &Op1 = MI->getOperand(OpNum);
+  // const MCOperand &Op2 = MI->getOperand(OpNum + 1);
+  O << "[";
+  printRegName(O, Op1.getReg());
+
+  // unsigned Offset = Op2.getImm();
+  // if (Offset) {
+  //   O << ", #" << Offset;
+  // }
+  O << "]";
+}

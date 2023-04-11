@@ -96,11 +96,11 @@ void Mips16InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     MIB.addReg(SrcReg, getKillRegState(KillSrc));
 }
 
-std::optional<DestSourcePair>
+Optional<DestSourcePair>
 Mips16InstrInfo::isCopyInstrImpl(const MachineInstr &MI) const {
   if (MI.isMoveReg())
     return DestSourcePair{MI.getOperand(0), MI.getOperand(1)};
-  return std::nullopt;
+  return None;
 }
 
 void Mips16InstrInfo::storeRegToStack(MachineBasicBlock &MBB,
@@ -190,7 +190,7 @@ static void addSaveRestoreRegs(MachineInstrBuilder &MIB,
     // method MipsTargetLowering::lowerRETURNADDR.
     // It's killed at the spill, unless the register is RA and return address
     // is taken.
-    Register Reg = CSI[e-i-1].getReg();
+    unsigned Reg = CSI[e-i-1].getReg();
     switch (Reg) {
     case Mips::RA:
     case Mips::S0:

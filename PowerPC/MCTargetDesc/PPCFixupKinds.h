@@ -51,10 +51,6 @@ enum Fixups {
   /// register number.
   fixup_ppc_nofixup,
 
-  /// A 16-bit fixup corresponding to lo16(_foo) with implied 3 zero bits for
-  /// instrs like 'lxv'. Produces the same relocation as fixup_ppc_half16ds.
-  fixup_ppc_half16dq,
-
   // Marker
   LastTargetFixupKind,
   NumTargetFixupKinds = LastTargetFixupKind - FirstTargetFixupKind

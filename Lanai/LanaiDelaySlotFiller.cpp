@@ -51,8 +51,9 @@ struct Filler : public MachineFunctionPass {
     TRI = Subtarget.getRegisterInfo();
 
     bool Changed = false;
-    for (MachineBasicBlock &MBB : MF)
-      Changed |= runOnMachineBasicBlock(MBB);
+    for (MachineFunction::iterator FI = MF.begin(), FE = MF.end(); FI != FE;
+         ++FI)
+      Changed |= runOnMachineBasicBlock(*FI);
     return Changed;
   }
 
@@ -199,7 +200,8 @@ bool Filler::delayHasHazard(MachineBasicBlock::instr_iterator MI, bool &SawLoad,
   assert((!MI->isCall() && !MI->isReturn()) &&
          "Cannot put calls or returns in delay slot.");
 
-  for (const MachineOperand &MO : MI->operands()) {
+  for (unsigned I = 0, E = MI->getNumOperands(); I != E; ++I) {
+    const MachineOperand &MO = MI->getOperand(I);
     unsigned Reg;
 
     if (!MO.isReg() || !(Reg = MO.getReg()))

@@ -22,10 +22,10 @@ struct amd_kernel_code_t;
 namespace llvm {
 
 class AMDGPUMachineFunction;
-struct AMDGPUResourceUsageAnalysis;
 class AMDGPUTargetStreamer;
 class MCCodeEmitter;
 class MCOperand;
+class GCNSubtarget;
 
 namespace AMDGPU {
 namespace HSAMD {
@@ -39,21 +39,39 @@ struct kernel_descriptor_t;
 
 class AMDGPUAsmPrinter final : public AsmPrinter {
 private:
-  void initializeTargetID(const Module &M);
+  // Track resource usage for callee functions.
+  struct SIFunctionResourceInfo {
+    // Track the number of explicitly used VGPRs. Special registers reserved at
+    // the end are tracked separately.
+    int32_t NumVGPR = 0;
+    int32_t NumAGPR = 0;
+    int32_t NumExplicitSGPR = 0;
+    uint64_t PrivateSegmentSize = 0;
+    bool UsesVCC = false;
+    bool UsesFlatScratch = false;
+    bool HasDynamicallySizedStack = false;
+    bool HasRecursion = false;
 
-  AMDGPUResourceUsageAnalysis *ResourceUsage;
+    int32_t getTotalNumSGPRs(const GCNSubtarget &ST) const;
+    int32_t getTotalNumVGPRs(const GCNSubtarget &ST) const;
+  };
 
   SIProgramInfo CurrentProgramInfo;
+  DenseMap<const Function *, SIFunctionResourceInfo> CallGraphResourceInfo;
 
   std::unique_ptr<AMDGPU::HSAMD::MetadataStreamer> HSAMetadataStream;
 
   MCCodeEmitter *DumpCodeInstEmitter = nullptr;
 
   uint64_t getFunctionCodeSize(const MachineFunction &MF) const;
+  SIFunctionResourceInfo analyzeResourceUsage(const MachineFunction &MF) const;
 
   void getSIProgramInfo(SIProgramInfo &Out, const MachineFunction &MF);
   void getAmdKernelCode(amd_kernel_code_t &Out, const SIProgramInfo &KernelInfo,
                         const MachineFunction &MF) const;
+  void findNumUsedRegistersSI(const MachineFunction &MF,
+                              unsigned &NumSGPR,
+                              unsigned &NumVGPR) const;
 
   /// Emit register usage information so that the GPU driver
   /// can correctly setup the GPU state.
@@ -63,13 +81,12 @@ private:
                        const SIProgramInfo &KernelInfo);
   void emitPALFunctionMetadata(const MachineFunction &MF);
   void emitCommonFunctionComments(uint32_t NumVGPR,
-                                  std::optional<uint32_t> NumAGPR,
-                                  uint32_t TotalNumVGPR, uint32_t NumSGPR,
-                                  uint64_t ScratchSize, uint64_t CodeSize,
-                                  const AMDGPUMachineFunction *MFI);
-  void emitResourceUsageRemarks(const MachineFunction &MF,
-                                const SIProgramInfo &CurrentProgramInfo,
-                                bool isModuleEntryFunction, bool hasMAIInsts);
+                                  Optional<uint32_t> NumAGPR,
+                                  uint32_t TotalNumVGPR,
+                                  uint32_t NumSGPR,
+                                  uint64_t ScratchSize,
+                                  uint64_t CodeSize,
+                                  const AMDGPUMachineFunction* MFI);
 
   uint16_t getAmdhsaKernelCodeProperties(
       const MachineFunction &MF) const;
@@ -77,8 +94,6 @@ private:
   amdhsa::kernel_descriptor_t getAmdhsaKernelDescriptor(
       const MachineFunction &MF,
       const SIProgramInfo &PI) const;
-
-  void initTargetStreamer(Module &M);
 
 public:
   explicit AMDGPUAsmPrinter(TargetMachine &TM,
@@ -131,11 +146,8 @@ public:
                        const char *ExtraCode, raw_ostream &O) override;
 
 protected:
-  void getAnalysisUsage(AnalysisUsage &AU) const override;
-
   std::vector<std::string> DisasmLines, HexLines;
   size_t DisasmLineMaxLen;
-  bool IsTargetStreamerInitialized;
 };
 
 } // end namespace llvm

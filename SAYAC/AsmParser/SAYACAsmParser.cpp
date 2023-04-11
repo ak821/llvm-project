@@ -167,6 +167,10 @@ public:
   bool isU16Imm() const { return isImm(0, 65535); }
   bool isS16Imm() const { return isImm(-32768, 32767); }
 
+  bool isUImmXLenm() const {
+    return isImm();
+  }
+
   void print(raw_ostream &OS) const override {
     switch (Kind) {
     case OpKind_Imm:
@@ -202,6 +206,9 @@ class SAYACAsmParser : public MCTargetAsmParser {
                                         SMLoc &EndLoc) override;
 
   bool parseOperand(OperandVector &Operands, StringRef Mnemonic);
+
+  bool generateImmOutOfRangeError(OperandVector &Operands, uint64_t ErrorInfo,
+                                  int64_t Lower, int64_t Upper, Twine Msg);
 
   OperandMatchResultTy parseImmWO(OperandVector &Operands);
   OperandMatchResultTy parsePCRel16(OperandVector &Operands) {
@@ -309,6 +316,13 @@ bool SAYACAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic) {
 llvm::dbgs() << "parseOperand failed (" << Mnemonic << ")\n";
   // Failure
   return true;
+}
+
+bool SAYACAsmParser::generateImmOutOfRangeError(
+    OperandVector &Operands, uint64_t ErrorInfo, int64_t Lower, int64_t Upper,
+    Twine Msg = "immediate must be an integer in the range") {
+  SMLoc ErrorLoc = ((SAYACOperand &)*Operands[ErrorInfo]).getStartLoc();
+  return Error(ErrorLoc, Msg + " [" + Twine(Lower) + ", " + Twine(Upper) + "]");
 }
 
 OperandMatchResultTy SAYACAsmParser::parseImmWO(OperandVector &Operands) {
@@ -428,6 +442,11 @@ bool SAYACAsmParser::MatchAndEmitInstruction(SMLoc IdLoc, unsigned &Opcode,
     return Error(IdLoc, "invalid instruction" + Suggestion/*,
                  Op.getLocRange()*/);
   }
+  // case Match_InvalidUImmXLenm:
+  //   return generateImmOutOfRangeError(Operands, ErrorInfo, 0, (1 << 8) - 1,
+  //                                     "operand must be a symbol with "
+  //                                     "%hi/%tprel_hi modifier or an integer in "
+  //                                     "the range");
   }
   llvm_unreachable("Unexpected match type");
 }

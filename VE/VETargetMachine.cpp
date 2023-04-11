@@ -12,14 +12,12 @@
 #include "VETargetMachine.h"
 #include "TargetInfo/VETargetInfo.h"
 #include "VE.h"
-#include "VEMachineFunctionInfo.h"
 #include "VETargetTransformInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/IR/LegacyPassManager.h"
-#include "llvm/MC/TargetRegistry.h"
-#include <optional>
+#include "llvm/Support/TargetRegistry.h"
 
 using namespace llvm;
 
@@ -28,9 +26,6 @@ using namespace llvm;
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeVETarget() {
   // Register the target.
   RegisterTargetMachine<VETargetMachine> X(getTheVETarget());
-
-  PassRegistry &PR = *PassRegistry::getPassRegistry();
-  initializeVEDAGToDAGISelPass(PR);
 }
 
 static std::string computeDataLayout(const Triple &T) {
@@ -65,18 +60,16 @@ static std::string computeDataLayout(const Triple &T) {
   return Ret;
 }
 
-static Reloc::Model getEffectiveRelocModel(std::optional<Reloc::Model> RM) {
-  return RM.value_or(Reloc::Static);
+static Reloc::Model getEffectiveRelocModel(Optional<Reloc::Model> RM) {
+  return RM.getValueOr(Reloc::Static);
 }
 
-namespace {
 class VEELFTargetObjectFile : public TargetLoweringObjectFileELF {
   void Initialize(MCContext &Ctx, const TargetMachine &TM) override {
     TargetLoweringObjectFileELF::Initialize(Ctx, TM);
     InitializeELF(TM.Options.UseInitArray);
   }
 };
-} // namespace
 
 static std::unique_ptr<TargetLoweringObjectFile> createTLOF() {
   return std::make_unique<VEELFTargetObjectFile>();
@@ -86,8 +79,8 @@ static std::unique_ptr<TargetLoweringObjectFile> createTLOF() {
 VETargetMachine::VETargetMachine(const Target &T, const Triple &TT,
                                  StringRef CPU, StringRef FS,
                                  const TargetOptions &Options,
-                                 std::optional<Reloc::Model> RM,
-                                 std::optional<CodeModel::Model> CM,
+                                 Optional<Reloc::Model> RM,
+                                 Optional<CodeModel::Model> CM,
                                  CodeGenOpt::Level OL, bool JIT)
     : LLVMTargetMachine(T, computeDataLayout(TT), TT, CPU, FS, Options,
                         getEffectiveRelocModel(RM),
@@ -97,18 +90,10 @@ VETargetMachine::VETargetMachine(const Target &T, const Triple &TT,
   initAsmInfo();
 }
 
-VETargetMachine::~VETargetMachine() = default;
+VETargetMachine::~VETargetMachine() {}
 
-TargetTransformInfo
-VETargetMachine::getTargetTransformInfo(const Function &F) const {
+TargetTransformInfo VETargetMachine::getTargetTransformInfo(const Function &F) {
   return TargetTransformInfo(VETTIImpl(this, F));
-}
-
-MachineFunctionInfo *VETargetMachine::createMachineFunctionInfo(
-    BumpPtrAllocator &Allocator, const Function &F,
-    const TargetSubtargetInfo *STI) const {
-  return VEMachineFunctionInfo::create<VEMachineFunctionInfo>(Allocator, F,
-                                                              STI);
 }
 
 namespace {

@@ -11,14 +11,13 @@
 
 #include "MCTargetDesc/MipsABIFlagsSection.h"
 #include "MCTargetDesc/MipsABIInfo.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/MC/MCELFStreamer.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
 
 namespace llvm {
-
-class formatted_raw_ostream;
 
 class MipsTargetStreamer : public MCTargetStreamer {
 public:
@@ -177,12 +176,12 @@ public:
 
   MipsABIFlagsSection &getABIFlagsSection() { return ABIFlagsSection; }
   const MipsABIInfo &getABI() const {
-    assert(ABI && "ABI hasn't been set!");
+    assert(ABI.hasValue() && "ABI hasn't been set!");
     return *ABI;
   }
 
 protected:
-  std::optional<MipsABIInfo> ABI;
+  llvm::Optional<MipsABIInfo> ABI;
   MipsABIFlagsSection ABIFlagsSection;
 
   bool GPRInfoSet;

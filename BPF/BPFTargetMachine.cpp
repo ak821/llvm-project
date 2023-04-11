@@ -20,14 +20,14 @@
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/PassManager.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/FormattedStream.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Target/TargetOptions.h"
+#include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #include "llvm/Transforms/Utils/SimplifyCFGOptions.h"
-#include <optional>
 using namespace llvm;
 
 static cl::
@@ -43,12 +43,10 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeBPFTarget() {
   PassRegistry &PR = *PassRegistry::getPassRegistry();
   initializeBPFAbstractMemberAccessLegacyPassPass(PR);
   initializeBPFPreserveDITypePass(PR);
-  initializeBPFIRPeepholePass(PR);
   initializeBPFAdjustOptPass(PR);
   initializeBPFCheckAndAdjustIRPass(PR);
   initializeBPFMIPeepholePass(PR);
   initializeBPFMIPeepholeTruncElimPass(PR);
-  initializeBPFDAGToDAGISelPass(PR);
 }
 
 // DataLayout: little or big endian
@@ -59,15 +57,15 @@ static std::string computeDataLayout(const Triple &TT) {
     return "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128";
 }
 
-static Reloc::Model getEffectiveRelocModel(std::optional<Reloc::Model> RM) {
-  return RM.value_or(Reloc::PIC_);
+static Reloc::Model getEffectiveRelocModel(Optional<Reloc::Model> RM) {
+  return RM.getValueOr(Reloc::PIC_);
 }
 
 BPFTargetMachine::BPFTargetMachine(const Target &T, const Triple &TT,
                                    StringRef CPU, StringRef FS,
                                    const TargetOptions &Options,
-                                   std::optional<Reloc::Model> RM,
-                                   std::optional<CodeModel::Model> CM,
+                                   Optional<Reloc::Model> RM,
+                                   Optional<CodeModel::Model> CM,
                                    CodeGenOpt::Level OL, bool JIT)
     : LLVMTargetMachine(T, computeDataLayout(TT), TT, CPU, FS, Options,
                         getEffectiveRelocModel(RM),
@@ -103,21 +101,42 @@ TargetPassConfig *BPFTargetMachine::createPassConfig(PassManagerBase &PM) {
   return new BPFPassConfig(*this, PM);
 }
 
-void BPFTargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
+void BPFTargetMachine::adjustPassManager(PassManagerBuilder &Builder) {
+ Builder.addExtension(
+      PassManagerBuilder::EP_EarlyAsPossible,
+      [&](const PassManagerBuilder &, legacy::PassManagerBase &PM) {
+        PM.add(createBPFAbstractMemberAccess(this));
+        PM.add(createBPFPreserveDIType());
+      });
+
+  Builder.addExtension(
+      PassManagerBuilder::EP_Peephole,
+      [&](const PassManagerBuilder &, legacy::PassManagerBase &PM) {
+        PM.add(createCFGSimplificationPass(
+            SimplifyCFGOptions().hoistCommonInsts(true)));
+      });
+  Builder.addExtension(
+      PassManagerBuilder::EP_ModuleOptimizerEarly,
+      [&](const PassManagerBuilder &, legacy::PassManagerBase &PM) {
+        PM.add(createBPFAdjustOpt());
+      });
+}
+
+void BPFTargetMachine::registerPassBuilderCallbacks(PassBuilder &PB,
+                                                    bool DebugPassManager) {
   PB.registerPipelineStartEPCallback(
-      [=](ModulePassManager &MPM, OptimizationLevel) {
-        FunctionPassManager FPM;
+      [=](ModulePassManager &MPM, PassBuilder::OptimizationLevel) {
+        FunctionPassManager FPM(DebugPassManager);
         FPM.addPass(BPFAbstractMemberAccessPass(this));
         FPM.addPass(BPFPreserveDITypePass());
-        FPM.addPass(BPFIRPeepholePass());
         MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
       });
   PB.registerPeepholeEPCallback([=](FunctionPassManager &FPM,
-                                    OptimizationLevel Level) {
+                                    PassBuilder::OptimizationLevel Level) {
     FPM.addPass(SimplifyCFGPass(SimplifyCFGOptions().hoistCommonInsts(true)));
   });
   PB.registerPipelineEarlySimplificationEPCallback(
-      [=](ModulePassManager &MPM, OptimizationLevel) {
+      [=](ModulePassManager &MPM, PassBuilder::OptimizationLevel) {
         MPM.addPass(BPFAdjustOptPass());
       });
 }
@@ -128,7 +147,7 @@ void BPFPassConfig::addIRPasses() {
 }
 
 TargetTransformInfo
-BPFTargetMachine::getTargetTransformInfo(const Function &F) const {
+BPFTargetMachine::getTargetTransformInfo(const Function &F) {
   return TargetTransformInfo(BPFTTIImpl(this, F));
 }
 

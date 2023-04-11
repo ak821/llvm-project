@@ -16,20 +16,19 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/MC/MCInst.h"
-#include "llvm/MC/MCInstBuilder.h"
 
 using namespace llvm;
 
 Thumb1InstrInfo::Thumb1InstrInfo(const ARMSubtarget &STI)
-    : ARMBaseInstrInfo(STI) {}
+    : ARMBaseInstrInfo(STI), RI() {}
 
 /// Return the noop instruction to use for a noop.
-MCInst Thumb1InstrInfo::getNop() const {
-  return MCInstBuilder(ARM::tMOVr)
-      .addReg(ARM::R8)
-      .addReg(ARM::R8)
-      .addImm(ARMCC::AL)
-      .addReg(0);
+void Thumb1InstrInfo::getNoop(MCInst &NopInst) const {
+  NopInst.setOpcode(ARM::tMOVr);
+  NopInst.addOperand(MCOperand::createReg(ARM::R8));
+  NopInst.addOperand(MCOperand::createReg(ARM::R8));
+  NopInst.addOperand(MCOperand::createImm(ARMCC::AL));
+  NopInst.addOperand(MCOperand::createReg(0));
 }
 
 unsigned Thumb1InstrInfo::getUnindexedOpcode(unsigned Opc) const {
@@ -75,12 +74,11 @@ void Thumb1InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
   }
 }
 
-void Thumb1InstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
-                                          MachineBasicBlock::iterator I,
-                                          Register SrcReg, bool isKill, int FI,
-                                          const TargetRegisterClass *RC,
-                                          const TargetRegisterInfo *TRI,
-                                          Register VReg) const {
+void Thumb1InstrInfo::
+storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
+                    Register SrcReg, bool isKill, int FI,
+                    const TargetRegisterClass *RC,
+                    const TargetRegisterInfo *TRI) const {
   assert((RC == &ARM::tGPRRegClass ||
           (Register::isPhysicalRegister(SrcReg) && isARMLowRegister(SrcReg))) &&
          "Unknown regclass!");
@@ -104,12 +102,11 @@ void Thumb1InstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
   }
 }
 
-void Thumb1InstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
-                                           MachineBasicBlock::iterator I,
-                                           Register DestReg, int FI,
-                                           const TargetRegisterClass *RC,
-                                           const TargetRegisterInfo *TRI,
-                                           Register VReg) const {
+void Thumb1InstrInfo::
+loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
+                     Register DestReg, int FI,
+                     const TargetRegisterClass *RC,
+                     const TargetRegisterInfo *TRI) const {
   assert(
       (RC->hasSuperClassEq(&ARM::tGPRRegClass) ||
        (Register::isPhysicalRegister(DestReg) && isARMLowRegister(DestReg))) &&
@@ -137,10 +134,6 @@ void Thumb1InstrInfo::expandLoadStackGuard(
     MachineBasicBlock::iterator MI) const {
   MachineFunction &MF = *MI->getParent()->getParent();
   const TargetMachine &TM = MF.getTarget();
-
-  assert(MF.getFunction().getParent()->getStackProtectorGuard() != "tls" &&
-         "TLS stack protector not supported for Thumb1 targets");
-
   if (TM.isPositionIndependent())
     expandLoadStackGuardBase(MI, ARM::tLDRLIT_ga_pcrel, ARM::tLDRi);
   else

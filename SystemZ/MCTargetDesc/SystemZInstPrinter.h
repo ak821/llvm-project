@@ -13,7 +13,6 @@
 #ifndef LLVM_LIB_TARGET_SYSTEMZ_MCTARGETDESC_SYSTEMZINSTPRINTER_H
 #define LLVM_LIB_TARGET_SYSTEMZ_MCTARGETDESC_SYSTEMZINSTPRINTER_H
 
-#include "SystemZMCAsmInfo.h"
 #include "llvm/MC/MCInstPrinter.h"
 #include <cstdint>
 
@@ -33,29 +32,19 @@ public:
   static const char *getRegisterName(unsigned RegNo);
 
   // Print an address with the given base, displacement and index.
-  void printAddress(const MCAsmInfo *MAI, unsigned Base,
-                    const MCOperand &DispMO, unsigned Index, raw_ostream &O);
+  static void printAddress(unsigned Base, int64_t Disp, unsigned Index,
+                           raw_ostream &O);
 
   // Print the given operand.
-  void printOperand(const MCOperand &MO, const MCAsmInfo *MAI, raw_ostream &O);
-
-  void printFormattedRegName(const MCAsmInfo *MAI, unsigned RegNo,
-                             raw_ostream &O) const;
+  static void printOperand(const MCOperand &MO, const MCAsmInfo *MAI,
+                           raw_ostream &O);
 
   // Override MCInstPrinter.
-  inline void printRegName(raw_ostream &O, unsigned RegNo) const override {
-    printFormattedRegName(&MAI, RegNo, O);
-  }
-
+  void printRegName(raw_ostream &O, unsigned RegNo) const override;
   void printInst(const MCInst *MI, uint64_t Address, StringRef Annot,
                  const MCSubtargetInfo &STI, raw_ostream &O) override;
 
 private:
-  template <unsigned N>
-  void printUImmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
-  template <unsigned N>
-  void printSImmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
-
   // Print various types of operand.
   void printOperand(const MCInst *MI, int OpNum, raw_ostream &O);
   void printOperand(const MCInst *MI, uint64_t /*Address*/, unsigned OpNum,

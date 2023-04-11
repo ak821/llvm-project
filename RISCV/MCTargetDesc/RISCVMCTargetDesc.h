@@ -29,6 +29,7 @@ class MCSubtargetInfo;
 class Target;
 
 MCCodeEmitter *createRISCVMCCodeEmitter(const MCInstrInfo &MCII,
+                                        const MCRegisterInfo &MRI,
                                         MCContext &Ctx);
 
 MCAsmBackend *createRISCVAsmBackend(const Target &T, const MCSubtargetInfo &STI,
@@ -45,7 +46,6 @@ std::unique_ptr<MCObjectTargetWriter> createRISCVELFObjectWriter(uint8_t OSABI,
 
 // Defines symbolic names for RISC-V instructions.
 #define GET_INSTRINFO_ENUM
-#define GET_INSTRINFO_MC_HELPER_DECLS
 #include "RISCVGenInstrInfo.inc"
 
 #define GET_SUBTARGETINFO_ENUM

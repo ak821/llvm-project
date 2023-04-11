@@ -89,10 +89,9 @@ ARMCOFFMCAsmInfoMicrosoft::ARMCOFFMCAsmInfoMicrosoft() {
   AlignmentIsInBytes = false;
   SupportsDebugInformation = true;
   ExceptionsType = ExceptionHandling::WinEH;
-  WinEHEncodingType = WinEH::EncodingType::Itanium;
   PrivateGlobalPrefix = "$M";
   PrivateLabelPrefix = "$M";
-  CommentString = "@";
+  CommentString = ";";
 
   // Conditional Thumb 4-byte instructions can have an implicit IT.
   MaxInstLength = 6;
@@ -111,8 +110,7 @@ ARMCOFFMCAsmInfoGNU::ARMCOFFMCAsmInfoGNU() {
   PrivateLabelPrefix = ".L";
 
   SupportsDebugInformation = true;
-  ExceptionsType = ExceptionHandling::WinEH;
-  WinEHEncodingType = WinEH::EncodingType::Itanium;
+  ExceptionsType = ExceptionHandling::DwarfCFI;
   UseParensForSymbolVariant = true;
 
   DwarfRegNumForCFI = false;

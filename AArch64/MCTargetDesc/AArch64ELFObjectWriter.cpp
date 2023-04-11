@@ -34,8 +34,6 @@ public:
 
   ~AArch64ELFObjectWriter() override = default;
 
-  MCSectionELF *getMemtagRelocsSection(MCContext &Ctx) const override;
-
 protected:
   unsigned getRelocType(MCContext &Ctx, const MCValue &Target,
                         const MCFixup &Fixup, bool IsPCRel) const override;
@@ -446,6 +444,8 @@ unsigned AArch64ELFObjectWriter::getRelocType(MCContext &Ctx,
       Ctx.reportError(Fixup.getLoc(),
                       "invalid fixup for movz/movk instruction");
       return ELF::R_AARCH64_NONE;
+    case AArch64::fixup_aarch64_tlsdesc_call:
+      return R_CLS(TLSDESC_CALL);
     default:
       Ctx.reportError(Fixup.getLoc(), "Unknown ELF relocation type");
       return ELF::R_AARCH64_NONE;
@@ -453,12 +453,6 @@ unsigned AArch64ELFObjectWriter::getRelocType(MCContext &Ctx,
   }
 
   llvm_unreachable("Unimplemented fixup -> relocation");
-}
-
-MCSectionELF *
-AArch64ELFObjectWriter::getMemtagRelocsSection(MCContext &Ctx) const {
-  return Ctx.getELFSection(".memtag.globals.static",
-                           ELF::SHT_AARCH64_MEMTAG_GLOBALS_STATIC, 0);
 }
 
 std::unique_ptr<MCObjectTargetWriter>

@@ -81,6 +81,12 @@ static DecodeStatus decodeU5ImmOOperand(MCInst &Inst, uint64_t Imm,
   return decodeUImmOperand<5>(Inst, Imm);
 }
 
+static DecodeStatus decodeU8ImmOperand(MCInst &Inst, uint64_t Imm,
+                                        uint64_t Address, const void *Decoder) {
+  return decodeUImmOperand<8>(Inst, Imm);
+}
+
+
 static DecodeStatus decodeU10ImmWOOperand(MCInst &Inst, uint64_t Imm,
                                           uint64_t Address,
                                           const void *Decoder) {

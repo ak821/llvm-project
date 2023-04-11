@@ -125,7 +125,6 @@ unsigned PPCELFObjectWriter::getRelocType(MCContext &Ctx, const MCValue &Target,
       }
       break;
     case PPC::fixup_ppc_half16ds:
-    case PPC::fixup_ppc_half16dq:
       Target.print(errs());
       errs() << '\n';
       report_fatal_error("Invalid PC-relative half16ds relocation");
@@ -350,7 +349,6 @@ unsigned PPCELFObjectWriter::getRelocType(MCContext &Ctx, const MCValue &Target,
       }
       break;
     case PPC::fixup_ppc_half16ds:
-    case PPC::fixup_ppc_half16dq:
       switch (Modifier) {
       default: llvm_unreachable("Unsupported Modifier");
       case MCSymbolRefExpr::VK_None:

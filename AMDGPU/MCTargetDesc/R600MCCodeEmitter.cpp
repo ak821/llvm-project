@@ -13,14 +13,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "MCTargetDesc/R600MCTargetDesc.h"
+#include "MCTargetDesc/AMDGPUMCTargetDesc.h"
 #include "R600Defines.h"
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
-#include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Support/EndianStream.h"
 
@@ -58,6 +57,11 @@ private:
   uint64_t getBinaryCodeForInstr(const MCInst &MI,
                                  SmallVectorImpl<MCFixup> &Fixups,
                                  const MCSubtargetInfo &STI) const;
+  FeatureBitset computeAvailableFeatures(const FeatureBitset &FB) const;
+  void
+  verifyInstructionPredicates(const MCInst &MI,
+                              const FeatureBitset &AvailableFeatures) const;
+
 };
 
 } // end anonymous namespace
@@ -80,13 +84,17 @@ enum FCInstr {
 };
 
 MCCodeEmitter *llvm::createR600MCCodeEmitter(const MCInstrInfo &MCII,
+                                             const MCRegisterInfo &MRI,
                                              MCContext &Ctx) {
-  return new R600MCCodeEmitter(MCII, *Ctx.getRegisterInfo());
+  return new R600MCCodeEmitter(MCII, MRI);
 }
 
 void R600MCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
-                                          SmallVectorImpl<MCFixup> &Fixups,
-                                          const MCSubtargetInfo &STI) const {
+                                       SmallVectorImpl<MCFixup> &Fixups,
+                                       const MCSubtargetInfo &STI) const {
+  verifyInstructionPredicates(MI,
+                              computeAvailableFeatures(STI.getFeatureBits()));
+
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
   if (MI.getOpcode() == R600::RETURN ||
     MI.getOpcode() == R600::FETCH_CLAUSE ||
@@ -179,4 +187,5 @@ uint64_t R600MCCodeEmitter::getMachineOpValue(const MCInst &MI,
   return MO.getImm();
 }
 
+#define ENABLE_INSTR_PREDICATE_VERIFIER
 #include "R600GenMCCodeEmitter.inc"

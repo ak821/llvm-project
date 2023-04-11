@@ -312,7 +312,8 @@ bool MVEVPTBlock::InsertVPTBlocks(MachineBasicBlock &Block) {
 }
 
 bool MVEVPTBlock::runOnMachineFunction(MachineFunction &Fn) {
-  const ARMSubtarget &STI = Fn.getSubtarget<ARMSubtarget>();
+  const ARMSubtarget &STI =
+      static_cast<const ARMSubtarget &>(Fn.getSubtarget());
 
   if (!STI.isThumb2() || !STI.hasMVEIntegerOps())
     return false;

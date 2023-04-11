@@ -8,7 +8,6 @@ add_llvm_component_library(LLVMAMDGPUAsmParser
   AMDGPUInfo
   AMDGPUUtils
   Support
-  TargetParser
 
   ADD_TO_COMPONENT
   AMDGPU

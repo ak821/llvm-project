@@ -156,6 +156,18 @@ class F_COMPARE<bits<1> ex_func, dag outs, dag ins, string asmstr,
     let Inst{3-0} = rd;
 }
 
+// Format: Move
+
+class MOV<bits<4> Opc, dag outs, dag ins, string asmstr,
+            list<dag> pattern, InstrItinClass itin = NoItinerary>
+            : InstSAYAC<outs, ins, asmstr, pattern, itin> {
+    bits<4> rd;
+    bits<8> imm;
+    let Inst{15-12} = Opc;
+    let Inst{11-4} = imm;
+    let Inst{3-0} = rd;
+}
+
 
 // class F_L<dag outs, dag ins, string asmstr, list<dag> pattern,
 //           InstrItinClass itin = NoItinerary>

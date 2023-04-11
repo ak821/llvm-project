@@ -10,6 +10,7 @@
 // instructions on to the real streamer.
 //
 //===----------------------------------------------------------------------===//
+#define DEBUG_TYPE "hexagonmcelfstreamer"
 
 #include "MCTargetDesc/HexagonMCELFStreamer.h"
 #include "MCTargetDesc/HexagonMCInstrInfo.h"
@@ -35,8 +36,6 @@
 #include "llvm/Support/MathExtras.h"
 #include <cassert>
 #include <cstdint>
-
-#define DEBUG_TYPE "hexagonmcelfstreamer"
 
 using namespace llvm;
 
@@ -87,7 +86,7 @@ void HexagonMCELFStreamer::EmitSymbol(const MCInst &Inst) {
 // parameter.
 void HexagonMCELFStreamer::HexagonMCEmitCommonSymbol(MCSymbol *Symbol,
                                                      uint64_t Size,
-                                                     Align ByteAlignment,
+                                                     unsigned ByteAlignment,
                                                      unsigned AccessSize) {
   getAssembler().registerSymbol(*Symbol);
   StringRef sbss[4] = {".sbss.1", ".sbss.2", ".sbss.4", ".sbss.8"};
@@ -108,7 +107,7 @@ void HexagonMCELFStreamer::HexagonMCEmitCommonSymbol(MCSymbol *Symbol,
     MCSection &Section = *getAssembler().getContext().getELFSection(
         SectionName, ELF::SHT_NOBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC);
     MCSectionSubPair P = getCurrentSection();
-    switchSection(&Section);
+    SwitchSection(&Section);
 
     if (ELFSymbol->isUndefined()) {
       emitValueToAlignment(ByteAlignment, 0, 1, 0);
@@ -117,9 +116,10 @@ void HexagonMCELFStreamer::HexagonMCEmitCommonSymbol(MCSymbol *Symbol,
     }
 
     // Update the maximum alignment of the section if necessary.
-    Section.ensureMinAlignment(ByteAlignment);
+    if (Align(ByteAlignment) > Section.getAlignment())
+      Section.setAlignment(Align(ByteAlignment));
 
-    switchSection(P.first, P.second);
+    SwitchSection(P.first, P.second);
   } else {
     if (ELFSymbol->declareCommon(Size, ByteAlignment))
       report_fatal_error("Symbol: " + Symbol->getName() +
@@ -137,15 +137,16 @@ void HexagonMCELFStreamer::HexagonMCEmitCommonSymbol(MCSymbol *Symbol,
 }
 
 void HexagonMCELFStreamer::HexagonMCEmitLocalCommonSymbol(MCSymbol *Symbol,
-                                                          uint64_t Size,
-                                                          Align ByteAlignment,
-                                                          unsigned AccessSize) {
+                                                         uint64_t Size,
+                                                         unsigned ByteAlignment,
+                                                         unsigned AccessSize) {
   getAssembler().registerSymbol(*Symbol);
   auto ELFSymbol = cast<MCSymbolELF>(Symbol);
   ELFSymbol->setBinding(ELF::STB_LOCAL);
   ELFSymbol->setExternal(false);
   HexagonMCEmitCommonSymbol(Symbol, Size, ByteAlignment, AccessSize);
 }
+
 
 namespace llvm {
 MCStreamer *createHexagonELFStreamer(Triple const &TT, MCContext &Context,

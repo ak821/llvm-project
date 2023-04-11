@@ -15,17 +15,15 @@
 #include "MCTargetDesc/MipsMCTargetDesc.h"
 #include "Mips.h"
 #include "Mips16ISelDAGToDAG.h"
-#include "MipsMachineFunction.h"
 #include "MipsSEISelDAGToDAG.h"
 #include "MipsSubtarget.h"
 #include "MipsTargetObjectFile.h"
-#include "MipsTargetTransformInfo.h"
 #include "TargetInfo/MipsTargetInfo.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/BasicTTIImpl.h"
-#include "llvm/CodeGen/GlobalISel/CSEInfo.h"
 #include "llvm/CodeGen/GlobalISel/IRTranslator.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
 #include "llvm/CodeGen/GlobalISel/Legalizer.h"
@@ -36,21 +34,16 @@
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/InitializePasses.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetOptions.h"
-#include <optional>
 #include <string>
 
 using namespace llvm;
 
 #define DEBUG_TYPE "mips"
-
-static cl::opt<bool>
-    EnableMulMulFix("mfix4300", cl::init(false),
-                    cl::desc("Enable the VR4300 mulmul bug fix."), cl::Hidden);
 
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeMipsTarget() {
   // Register the target.
@@ -65,9 +58,6 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeMipsTarget() {
   initializeMipsBranchExpansionPass(*PR);
   initializeMicroMipsSizeReducePass(*PR);
   initializeMipsPreLegalizerCombinerPass(*PR);
-  initializeMipsPostLegalizerCombinerPass(*PR);
-  initializeMipsMulMulBugFixPass(*PR);
-  initializeMipsDAGToDAGISelPass(*PR);
 }
 
 static std::string computeDataLayout(const Triple &TT, StringRef CPU,
@@ -107,8 +97,8 @@ static std::string computeDataLayout(const Triple &TT, StringRef CPU,
 }
 
 static Reloc::Model getEffectiveRelocModel(bool JIT,
-                                           std::optional<Reloc::Model> RM) {
-  if (!RM || JIT)
+                                           Optional<Reloc::Model> RM) {
+  if (!RM.hasValue() || JIT)
     return Reloc::Static;
   return *RM;
 }
@@ -121,8 +111,8 @@ static Reloc::Model getEffectiveRelocModel(bool JIT,
 MipsTargetMachine::MipsTargetMachine(const Target &T, const Triple &TT,
                                      StringRef CPU, StringRef FS,
                                      const TargetOptions &Options,
-                                     std::optional<Reloc::Model> RM,
-                                     std::optional<CodeModel::Model> CM,
+                                     Optional<Reloc::Model> RM,
+                                     Optional<CodeModel::Model> CM,
                                      CodeGenOpt::Level OL, bool JIT,
                                      bool isLittle)
     : LLVMTargetMachine(T, computeDataLayout(TT, CPU, Options, isLittle), TT,
@@ -131,11 +121,14 @@ MipsTargetMachine::MipsTargetMachine(const Target &T, const Triple &TT,
       isLittle(isLittle), TLOF(std::make_unique<MipsTargetObjectFile>()),
       ABI(MipsABIInfo::computeTargetABI(TT, CPU, Options.MCOptions)),
       Subtarget(nullptr),
-      DefaultSubtarget(TT, CPU, FS, isLittle, *this, std::nullopt),
+      DefaultSubtarget(TT, CPU, FS, isLittle, *this,
+                       MaybeAlign(Options.StackAlignmentOverride)),
       NoMips16Subtarget(TT, CPU, FS.empty() ? "-mips16" : FS.str() + ",-mips16",
-                        isLittle, *this, std::nullopt),
+                        isLittle, *this,
+                        MaybeAlign(Options.StackAlignmentOverride)),
       Mips16Subtarget(TT, CPU, FS.empty() ? "+mips16" : FS.str() + ",+mips16",
-                      isLittle, *this, std::nullopt) {
+                      isLittle, *this,
+                      MaybeAlign(Options.StackAlignmentOverride)) {
   Subtarget = &DefaultSubtarget;
   initAsmInfo();
 
@@ -150,8 +143,8 @@ void MipsebTargetMachine::anchor() {}
 MipsebTargetMachine::MipsebTargetMachine(const Target &T, const Triple &TT,
                                          StringRef CPU, StringRef FS,
                                          const TargetOptions &Options,
-                                         std::optional<Reloc::Model> RM,
-                                         std::optional<CodeModel::Model> CM,
+                                         Optional<Reloc::Model> RM,
+                                         Optional<CodeModel::Model> CM,
                                          CodeGenOpt::Level OL, bool JIT)
     : MipsTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, JIT, false) {}
 
@@ -160,8 +153,8 @@ void MipselTargetMachine::anchor() {}
 MipselTargetMachine::MipselTargetMachine(const Target &T, const Triple &TT,
                                          StringRef CPU, StringRef FS,
                                          const TargetOptions &Options,
-                                         std::optional<Reloc::Model> RM,
-                                         std::optional<CodeModel::Model> CM,
+                                         Optional<Reloc::Model> RM,
+                                         Optional<CodeModel::Model> CM,
                                          CodeGenOpt::Level OL, bool JIT)
     : MipsTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, JIT, true) {}
 
@@ -183,7 +176,9 @@ MipsTargetMachine::getSubtargetImpl(const Function &F) const {
   // FIXME: This is related to the code below to reset the target options,
   // we need to know whether or not the soft float flag is set on the
   // function, so we can enable it as a subtarget feature.
-  bool softFloat = F.getFnAttribute("use-soft-float").getValueAsBool();
+  bool softFloat =
+      F.hasFnAttribute("use-soft-float") &&
+      F.getFnAttribute("use-soft-float").getValueAsString() == "true";
 
   if (hasMips16Attr)
     FS += FS.empty() ? "+mips16" : ",+mips16";
@@ -204,7 +199,7 @@ MipsTargetMachine::getSubtargetImpl(const Function &F) const {
     resetTargetOptions(F);
     I = std::make_unique<MipsSubtarget>(
         TargetTriple, CPU, FS, isLittle, *this,
-        MaybeAlign(F.getParent()->getOverrideStackAlignment()));
+        MaybeAlign(Options.StackAlignmentOverride));
   }
   return I.get();
 }
@@ -244,7 +239,6 @@ public:
   bool addIRTranslator() override;
   void addPreLegalizeMachineIR() override;
   bool addLegalizeMachineIR() override;
-  void addPreRegBankSelect() override;
   bool addRegBankSelect() override;
   bool addGlobalInstructionSelect() override;
 
@@ -283,7 +277,7 @@ void MipsPassConfig::addPreRegAlloc() {
 }
 
 TargetTransformInfo
-MipsTargetMachine::getTargetTransformInfo(const Function &F) const {
+MipsTargetMachine::getTargetTransformInfo(const Function &F) {
   if (Subtarget->allowMixed16_32()) {
     LLVM_DEBUG(errs() << "No Target Transform Info Pass Added\n");
     // FIXME: This is no longer necessary as the TTI returned is per-function.
@@ -291,13 +285,7 @@ MipsTargetMachine::getTargetTransformInfo(const Function &F) const {
   }
 
   LLVM_DEBUG(errs() << "Target Transform Info Pass Added\n");
-  return TargetTransformInfo(MipsTTIImpl(this, F));
-}
-
-MachineFunctionInfo *MipsTargetMachine::createMachineFunctionInfo(
-    BumpPtrAllocator &Allocator, const Function &F,
-    const TargetSubtargetInfo *STI) const {
-  return MipsFunctionInfo::create<MipsFunctionInfo>(Allocator, F, STI);
+  return TargetTransformInfo(BasicTTIImpl(this, F));
 }
 
 // Implemented by targets that want to run passes immediately before
@@ -309,11 +297,6 @@ void MipsPassConfig::addPreEmitPass() {
   // The microMIPS size reduction pass performs instruction reselection for
   // instructions which can be remapped to a 16 bit instruction.
   addPass(createMicroMipsSizeReducePass());
-
-  // This pass inserts a nop instruction between two back-to-back multiplication
-  // instructions when the "mfix4300" flag is passed.
-  if (EnableMulMulFix)
-    addPass(createMipsMulMulBugPass());
 
   // The delay slot filler pass can potientially create forbidden slot hazards
   // for MIPSR6 and therefore it should go before MipsBranchExpansion pass.
@@ -346,17 +329,12 @@ bool MipsPassConfig::addLegalizeMachineIR() {
   return false;
 }
 
-void MipsPassConfig::addPreRegBankSelect() {
-  bool IsOptNone = getOptLevel() == CodeGenOpt::None;
-  addPass(createMipsPostLegalizeCombiner(IsOptNone));
-}
-
 bool MipsPassConfig::addRegBankSelect() {
   addPass(new RegBankSelect());
   return false;
 }
 
 bool MipsPassConfig::addGlobalInstructionSelect() {
-  addPass(new InstructionSelect(getOptLevel()));
+  addPass(new InstructionSelect());
   return false;
 }

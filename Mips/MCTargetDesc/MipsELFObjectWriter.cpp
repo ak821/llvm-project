@@ -220,8 +220,6 @@ unsigned MipsELFObjectWriter::getRelocType(MCContext &Ctx,
                                            bool IsPCRel) const {
   // Determine the type of the relocation.
   unsigned Kind = Fixup.getTargetKind();
-  if (Kind >= FirstLiteralRelocationKind)
-    return Kind - FirstLiteralRelocationKind;
 
   switch (Kind) {
   case FK_NONE:
@@ -558,7 +556,7 @@ bool MipsELFObjectWriter::needsRelocateWithSymbol(const MCSymbol &Sym,
   case ELF::R_MIPS_GPREL32:
     if (cast<MCSymbolELF>(Sym).getOther() & ELF::STO_MIPS_MICROMIPS)
       return true;
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case ELF::R_MIPS_26:
   case ELF::R_MIPS_64:
   case ELF::R_MIPS_GPREL16:

@@ -15,9 +15,7 @@
 #include "BPFTargetMachine.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/IntrinsicsBPF.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
@@ -27,7 +25,6 @@
 #define DEBUG_TYPE "bpf-adjust-opt"
 
 using namespace llvm;
-using namespace llvm::PatternMatch;
 
 static cl::opt<bool>
     DisableBPFserializeICMP("bpf-disable-serialize-icmp", cl::Hidden,
@@ -67,7 +64,6 @@ private:
   Module *M;
   SmallVector<PassThroughInfo, 16> PassThroughs;
 
-  bool adjustICmpToBuiltin();
   void adjustBasicBlock(BasicBlock &BB);
   bool serializeICMPCrossBB(BasicBlock &BB);
   void adjustInst(Instruction &I);
@@ -87,72 +83,14 @@ ModulePass *llvm::createBPFAdjustOpt() { return new BPFAdjustOpt(); }
 bool BPFAdjustOpt::runOnModule(Module &M) { return BPFAdjustOptImpl(&M).run(); }
 
 bool BPFAdjustOptImpl::run() {
-  bool Changed = adjustICmpToBuiltin();
-
   for (Function &F : *M)
     for (auto &BB : F) {
       adjustBasicBlock(BB);
       for (auto &I : BB)
         adjustInst(I);
     }
-  return insertPassThrough() || Changed;
-}
 
-// Commit acabad9ff6bf ("[InstCombine] try to canonicalize icmp with
-// trunc op into mask and cmp") added a transformation to
-// convert "(conv)a < power_2_const" to "a & <const>" in certain
-// cases and bpf kernel verifier has to handle the resulted code
-// conservatively and this may reject otherwise legitimate program.
-// Here, we change related icmp code to a builtin which will
-// be restored to original icmp code later to prevent that
-// InstCombine transformatin.
-bool BPFAdjustOptImpl::adjustICmpToBuiltin() {
-  bool Changed = false;
-  ICmpInst *ToBeDeleted = nullptr;
-  for (Function &F : *M)
-    for (auto &BB : F)
-      for (auto &I : BB) {
-        if (ToBeDeleted) {
-          ToBeDeleted->eraseFromParent();
-          ToBeDeleted = nullptr;
-        }
-
-        auto *Icmp = dyn_cast<ICmpInst>(&I);
-        if (!Icmp)
-          continue;
-
-        Value *Op0 = Icmp->getOperand(0);
-        if (!isa<TruncInst>(Op0))
-          continue;
-
-        auto ConstOp1 = dyn_cast<ConstantInt>(Icmp->getOperand(1));
-        if (!ConstOp1)
-          continue;
-
-        auto ConstOp1Val = ConstOp1->getValue().getZExtValue();
-        auto Op = Icmp->getPredicate();
-        if (Op == ICmpInst::ICMP_ULT || Op == ICmpInst::ICMP_UGE) {
-          if ((ConstOp1Val - 1) & ConstOp1Val)
-            continue;
-        } else if (Op == ICmpInst::ICMP_ULE || Op == ICmpInst::ICMP_UGT) {
-          if (ConstOp1Val & (ConstOp1Val + 1))
-            continue;
-        } else {
-          continue;
-        }
-
-        Constant *Opcode =
-            ConstantInt::get(Type::getInt32Ty(BB.getContext()), Op);
-        Function *Fn = Intrinsic::getDeclaration(
-            M, Intrinsic::bpf_compare, {Op0->getType(), ConstOp1->getType()});
-        auto *NewInst = CallInst::Create(Fn, {Opcode, Op0, ConstOp1});
-        NewInst->insertBefore(&I);
-        Icmp->replaceAllUsesWith(NewInst);
-        Changed = true;
-        ToBeDeleted = Icmp;
-      }
-
-  return Changed;
+  return insertPassThrough();
 }
 
 bool BPFAdjustOptImpl::insertPassThrough() {
@@ -177,14 +115,12 @@ bool BPFAdjustOptImpl::serializeICMPInBB(Instruction &I) {
   //   comp2 = icmp <opcode> ...;
   //   new_comp1 = __builtin_bpf_passthrough(seq_num, comp1)
   //   ... or new_comp1 comp2 ...
-  Value *Op0, *Op1;
-  // Use LogicalOr (accept `or i1` as well as `select i1 Op0, true, Op1`)
-  if (!match(&I, m_LogicalOr(m_Value(Op0), m_Value(Op1))))
+  if (I.getOpcode() != Instruction::Or)
     return false;
-  auto *Icmp1 = dyn_cast<ICmpInst>(Op0);
+  auto *Icmp1 = dyn_cast<ICmpInst>(I.getOperand(0));
   if (!Icmp1)
     return false;
-  auto *Icmp2 = dyn_cast<ICmpInst>(Op1);
+  auto *Icmp2 = dyn_cast<ICmpInst>(I.getOperand(1));
   if (!Icmp2)
     return false;
 
@@ -259,16 +195,10 @@ bool BPFAdjustOptImpl::serializeICMPCrossBB(BasicBlock &BB) {
     return false;
 
   if (Cond1Op == ICmpInst::ICMP_SGT || Cond1Op == ICmpInst::ICMP_SGE) {
-    if (Cond2Op != ICmpInst::ICMP_SLT && Cond2Op != ICmpInst::ICMP_SLE)
+    if (Cond2Op != ICmpInst::ICMP_SLT && Cond1Op != ICmpInst::ICMP_SLE)
       return false;
   } else if (Cond1Op == ICmpInst::ICMP_SLT || Cond1Op == ICmpInst::ICMP_SLE) {
-    if (Cond2Op != ICmpInst::ICMP_SGT && Cond2Op != ICmpInst::ICMP_SGE)
-      return false;
-  } else if (Cond1Op == ICmpInst::ICMP_ULT || Cond1Op == ICmpInst::ICMP_ULE) {
-    if (Cond2Op != ICmpInst::ICMP_UGT && Cond2Op != ICmpInst::ICMP_UGE)
-      return false;
-  } else if (Cond1Op == ICmpInst::ICMP_UGT || Cond1Op == ICmpInst::ICMP_UGE) {
-    if (Cond2Op != ICmpInst::ICMP_ULT && Cond2Op != ICmpInst::ICMP_ULE)
+    if (Cond2Op != ICmpInst::ICMP_SGT && Cond1Op != ICmpInst::ICMP_SGE)
       return false;
   } else {
     return false;
@@ -338,9 +268,9 @@ bool BPFAdjustOptImpl::avoidSpeculation(Instruction &I) {
     // load/store insn before this instruction in this basic
     // block. Most likely it cannot be hoisted out. Skip it.
     for (auto &I2 : *Inst->getParent()) {
-      if (isa<CallInst>(&I2))
+      if (dyn_cast<CallInst>(&I2))
         return false;
-      if (isa<LoadInst>(&I2) || isa<StoreInst>(&I2))
+      if (dyn_cast<LoadInst>(&I2) || dyn_cast<StoreInst>(&I2))
         return false;
       if (&I2 == Inst)
         break;

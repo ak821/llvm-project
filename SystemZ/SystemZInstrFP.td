@@ -128,10 +128,9 @@ let Predicates = [FeatureNoVectorEnhancements1] in {
                                     (EXTRACT_SUBREG FP128:$src2, subreg_h64))>;
 }
 
-// The length is given as one less for MVCImm.
-defm LoadStoreF32  : MVCLoadStore<load, f32,  MVCImm, 3>;
-defm LoadStoreF64  : MVCLoadStore<load, f64,  MVCImm, 7>;
-defm LoadStoreF128 : MVCLoadStore<load, f128, MVCImm, 15>;
+defm LoadStoreF32  : MVCLoadStore<load, f32,  MVCSequence, 4>;
+defm LoadStoreF64  : MVCLoadStore<load, f64,  MVCSequence, 8>;
+defm LoadStoreF128 : MVCLoadStore<load, f128, MVCSequence, 16>;
 
 //===----------------------------------------------------------------------===//
 // Load instructions

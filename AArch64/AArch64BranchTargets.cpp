@@ -39,8 +39,7 @@ public:
   StringRef getPassName() const override { return AARCH64_BRANCH_TARGETS_NAME; }
 
 private:
-  void addBTI(MachineBasicBlock &MBB, bool CouldCall, bool CouldJump,
-              bool NeedsWinCFI);
+  void addBTI(MachineBasicBlock &MBB, bool CouldCall, bool CouldJump);
 };
 } // end anonymous namespace
 
@@ -65,6 +64,7 @@ bool AArch64BranchTargets::runOnMachineFunction(MachineFunction &MF) {
   LLVM_DEBUG(
       dbgs() << "********** AArch64 Branch Targets  **********\n"
              << "********** Function: " << MF.getName() << '\n');
+  const Function &F = MF.getFunction();
 
   // LLVM does not consider basic blocks which are the targets of jump tables
   // to be address-taken (the address can't escape anywhere else), but they are
@@ -76,19 +76,15 @@ bool AArch64BranchTargets::runOnMachineFunction(MachineFunction &MF) {
         JumpTableTargets.insert(MBB);
 
   bool MadeChange = false;
-  bool HasWinCFI = MF.hasWinCFI();
   for (MachineBasicBlock &MBB : MF) {
     bool CouldCall = false, CouldJump = false;
-    // Even in cases where a function has internal linkage and is only called
-    // directly in its translation unit, it can still be called indirectly if
-    // the linker decides to add a thunk to it for whatever reason (say, for
-    // example, if it is finally placed far from its call site and a BL is not
-    // long-range enough). PLT entries and tail-calls use BR, but when they are
+    // If the function is address-taken or externally-visible, it could be
+    // indirectly called. PLT entries and tail-calls use BR, but when they are
     // are in guarded pages should all use x16 or x17 to hold the called
     // address, so we don't need to set CouldJump here. BR instructions in
     // non-guarded pages (which might be non-BTI-aware code) are allowed to
     // branch to a "BTI c" using any register.
-    if (&MBB == &*MF.begin())
+    if (&MBB == &*MF.begin() && (F.hasAddressTaken() || !F.hasLocalLinkage()))
       CouldCall = true;
 
     // If the block itself is address-taken, it could be indirectly branched
@@ -97,7 +93,7 @@ bool AArch64BranchTargets::runOnMachineFunction(MachineFunction &MF) {
       CouldJump = true;
 
     if (CouldCall || CouldJump) {
-      addBTI(MBB, CouldCall, CouldJump, HasWinCFI);
+      addBTI(MBB, CouldCall, CouldJump);
       MadeChange = true;
     }
   }
@@ -106,7 +102,7 @@ bool AArch64BranchTargets::runOnMachineFunction(MachineFunction &MF) {
 }
 
 void AArch64BranchTargets::addBTI(MachineBasicBlock &MBB, bool CouldCall,
-                                  bool CouldJump, bool HasWinCFI) {
+                                  bool CouldJump) {
   LLVM_DEBUG(dbgs() << "Adding BTI " << (CouldJump ? "j" : "")
                     << (CouldCall ? "c" : "") << " to " << MBB.getName()
                     << "\n");
@@ -123,10 +119,8 @@ void AArch64BranchTargets::addBTI(MachineBasicBlock &MBB, bool CouldCall,
 
   auto MBBI = MBB.begin();
 
-  // Skip the meta instructions, those will be removed anyway.
-  for (; MBBI != MBB.end() &&
-         (MBBI->isMetaInstruction() || MBBI->getOpcode() == AArch64::EMITBKEY);
-       ++MBBI)
+  // Skip the meta instuctions, those will be removed anyway.
+  for (; MBBI != MBB.end() && MBBI->isMetaInstruction(); ++MBBI)
     ;
 
   // SCTLR_EL1.BT[01] is set to 0 by default which means
@@ -136,10 +130,6 @@ void AArch64BranchTargets::addBTI(MachineBasicBlock &MBB, bool CouldCall,
        MBBI->getOpcode() == AArch64::PACIBSP))
     return;
 
-  if (HasWinCFI && MBBI->getFlag(MachineInstr::FrameSetup)) {
-    BuildMI(MBB, MBB.begin(), MBB.findDebugLoc(MBB.begin()),
-            TII->get(AArch64::SEH_Nop));
-  }
   BuildMI(MBB, MBB.begin(), MBB.findDebugLoc(MBB.begin()),
           TII->get(AArch64::HINT))
       .addImm(HintNum);

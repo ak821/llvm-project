@@ -29,35 +29,36 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeSAYACTarget() {
 namespace {
 // TODO: Check.
 std::string computeDataLayout(const Triple &TT, StringRef CPU, StringRef FS) {
-  std::string Ret;
+  std::string Ret = "e-m:e-p:16:16-i32:16-i64:16-f32:16-f64:16-a:8-n8:16-S16";
+  return Ret;
 
   // Big endian.
-  Ret += "E";
+  // Ret += "E";
 
-  // Data mangling.
-  Ret += DataLayout::getManglingComponent(TT);
+  // // Data mangling.
+  // Ret += DataLayout::getManglingComponent(TT);
 
-  // Pointers are 32 bit.
-  Ret += "-p:32:8:32";
+  // // Pointers are 32 bit.
+  // Ret += "-p:32:8:32";
 
-  // Make sure that global data has at least 16 bits of alignment by
-  // default, so that we can refer to it using LARL.  We don't have any
-  // special requirements for stack variables though.
-  Ret += "-i1:8:16-i8:8:16";
+  // // Make sure that global data has at least 16 bits of alignment by
+  // // default, so that we can refer to it using LARL.  We don't have any
+  // // special requirements for stack variables though.
+  // Ret += "-i1:8:16-i8:8:16";
 
-  // 64-bit integers are naturally aligned.
-  Ret += "-i64:64";
+  // // 64-bit integers are naturally aligned.
+  // Ret += "-i64:64";
 
-  // 128-bit floats are aligned only to 64 bits.
-  Ret += "-f128:64";
+  // // 128-bit floats are aligned only to 64 bits.
+  // Ret += "-f128:64";
 
-  // We prefer 16 bits of aligned for all globals; see above.
-  Ret += "-a:8:16";
+  // // We prefer 16 bits of aligned for all globals; see above.
+  // Ret += "-a:8:16";
 
-  // Integer registers are 32bits.
-  Ret += "-n32";
+  // // Integer registers are 32bits.
+  // Ret += "-n32";
 
-  return Ret;
+  // return Ret;
 }
 
 // TODO: Check.
