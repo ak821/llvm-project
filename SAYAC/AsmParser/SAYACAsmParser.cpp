@@ -255,7 +255,7 @@ bool SAYACAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name
                                      SMLoc NameLoc, OperandVector &Operands) {
   // First operand in MCInst is instruction mnemonic.
   Operands.push_back(SAYACOperand::createToken(Name, NameLoc));
-
+  
   // Read the remaining operands.
   if (getLexer().isNot(AsmToken::EndOfStatement)) {
     // Read the first operand.

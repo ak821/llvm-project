@@ -51,7 +51,7 @@ public:
     return "SAYAC DAG->DAG Pattern Instruction Selection";
   }
 
-  bool SelectAddr(SDValue Addr, SDValue &Base, SDValue &Offset);
+  bool SelectAddr(SDValue Addr, SDValue &Base);
 
   // Override SelectionDAGISel.
   void Select(SDNode *Node) override;
@@ -72,22 +72,23 @@ FunctionPass *llvm::createSAYACISelDag(SAYACTargetMachine &TM,
   return new SAYACDAGToDAGISel(TM, OptLevel);
 }
 
-bool SAYACDAGToDAGISel::SelectAddr(SDValue Addr, SDValue &Base, SDValue &Offset) {
+bool SAYACDAGToDAGISel::SelectAddr(SDValue Addr, SDValue &Base) {
   if (FrameIndexSDNode *FIN = dyn_cast<FrameIndexSDNode>(Addr)) {
-    EVT PtrVT = getTargetLowering()->getPointerTy(CurDAG->getDataLayout());
-    Base = CurDAG->getTargetFrameIndex(FIN->getIndex(), PtrVT);
-    Offset = CurDAG->getTargetConstant(0, Addr, MVT::i32);
+    // EVT PtrVT = getTargetLowering()->getPointerTy(CurDAG->getDataLayout());
+    Base = CurDAG->getTargetFrameIndex(FIN->getIndex(), MVT::i16);
+    // Offset = CurDAG->getTargetConstant(0, Addr, MVT::i32);
     return true;
   }
-  if (Addr.getOpcode() == ISD::TargetExternalSymbol ||
-      Addr.getOpcode() == ISD::TargetGlobalAddress ||
-      Addr.getOpcode() == ISD::TargetGlobalTLSAddress) {
-    return false; // direct calls.
-  }
+  return false;
+  // if (Addr.getOpcode() == ISD::TargetExternalSymbol ||
+  //     Addr.getOpcode() == ISD::TargetGlobalAddress ||
+  //     Addr.getOpcode() == ISD::TargetGlobalTLSAddress) {
+  //   return false; // direct calls.
+  // }
 
-  Base = Addr;
-  Offset = CurDAG->getTargetConstant(0, Addr, MVT::i32);
-  return true;
+  // Base = Addr;
+  // Offset = CurDAG->getTargetConstant(0, Addr, MVT::i32);
+  // return true;
 }
 
 
@@ -95,8 +96,18 @@ void SAYACDAGToDAGISel::Select(SDNode *Node) {
   // Instruction Selection not handled by the auto-generated tablegen selection
   // should be handled here.
 
-  // dbgs() << (ISD::STORE) << '\n';
+  Node->dump();
+
+  // if (Node->getOpcode() == ISD::LOAD) {
+  //   if(cast<LoadSDNode>(*Node).getAddressingMode() == ISD::UNINDEXED) dbgs() << "YES\n";
+  //   else dbgs() << "NO\n";
+  //   // dbgs() << Node->getNumOperands() << '\n';
+  //   // for(int i=0;i<3;++i) 
+  //   //   Node->getOperand(i)->dump();
+  // }
 
   // Select the default instruction.
   SelectCode(Node);
+
+  // CurDAG->dump();
 }

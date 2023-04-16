@@ -52,3 +52,12 @@ void SAYACInstrInfo::anchor() {}
 
 SAYACInstrInfo::SAYACInstrInfo(SAYACSubtarget &STI)
     : SAYACGenInstrInfo(), RI(), STI(STI) {}
+
+
+void SAYACInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
+                                 MachineBasicBlock::iterator I,
+                                 const DebugLoc &DL, MCRegister DestReg,
+                                 MCRegister SrcReg, bool KillSrc) const {
+  BuildMI(MBB, I, I->getDebugLoc(), get(SAYAC::ADDri), DestReg)
+      .addReg(SrcReg, getKillRegState(KillSrc));
+}

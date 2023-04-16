@@ -18,6 +18,7 @@ class SAYACSubtarget;
 
 class SAYACFrameLowering : public TargetFrameLowering {
   IndexedMap<unsigned> RegSpillOffsets;
+  uint64_t computeStackSize(MachineFunction &MF) const;
 
 public:
   SAYACFrameLowering();

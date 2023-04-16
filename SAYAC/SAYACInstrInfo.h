@@ -40,6 +40,10 @@ public:
 
   // Return the SAYACRegisterInfo, which this class owns.
   const SAYACRegisterInfo &getRegisterInfo() const { return RI; }
+
+  void copyPhysReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+                   const DebugLoc &DL, MCRegister DstReg, MCRegister SrcReg,
+                   bool KillSrc) const override;
 };
 
 } // end namespace llvm

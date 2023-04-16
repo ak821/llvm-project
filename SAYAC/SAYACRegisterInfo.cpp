@@ -51,9 +51,34 @@ BitVector SAYACRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   return Reserved;
 }
 
-void SAYACRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
+void SAYACRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
                                            int SPAdj, unsigned FIOperandNum,
-                                           RegScavenger *RS) const {}
+                                           RegScavenger *RS) const {
+  MachineInstr &MI = *II;
+  const MachineFunction &MF = *MI.getParent()->getParent();
+  const MachineFrameInfo MFI = MF.getFrameInfo();
+  MachineOperand &FIOp = MI.getOperand(FIOperandNum);
+  unsigned FI = FIOp.getIndex();
+
+  // Determine if we can eliminate the index from this kind of instruction
+  unsigned ImmOpIdx = 0;
+  switch (MI.getOpcode()) {
+    default:
+      // Not yet supported
+      return;
+    case SAYAC::LDR:
+    case SAYAC::STR:
+    //   ImmOpIdx = FIOperandNum + 1;
+      break;
+  }
+
+  // FIXME: check the size of offset.
+  // MachineOperand &ImmOp = MI.getOperand(ImmOpIdx);
+  // int Offset = MFI.getObjectOffset(FI) + MFI.getStackSize() + ImmOp.getImm();
+  FIOp.ChangeToRegister(SAYAC::R13, false);
+  // ImmOp.setImm(Offset);
+
+}
 
 Register SAYACRegisterInfo::getFrameRegister(const MachineFunction &MF) const {
   return SAYAC::R3;

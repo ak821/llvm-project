@@ -128,54 +128,123 @@ def MHI : MOV<0b0110, (outs GPROpnd: $rd), (ins uimm8_m:$imm8),
 }
 
 def ADDri : F_LAI<0b1011,
-                 (outs GPROpnd:$rd), (ins GPROpnd: $rs, imm16zx8:$imm8),
+                 (outs GPR:$rd), (ins GPR: $rs, imm16zx8:$imm8),
                  "adi $rs $imm8",
-                 [(set GPROpnd:$rd, (add GPROpnd:$rs, imm16zx8:$imm8))]
+                 [(set GPR:$rd, (add GPR:$rs, imm16zx8:$imm8))]
                  > {
                   let Constraints = "$rd = $rs";
                  }
 
+def SUBri : F_LAI<0b1100,
+                 (outs GPR:$rd), (ins GPR: $rs, imm16zx8:$imm8),
+                 "sui $rs $imm8",
+                 [(set GPR:$rd, (sub GPR:$rs, imm16zx8:$imm8))]
+                 > {
+                  let Constraints = "$rd = $rs";
+                 }
+
+// def MOVrr : InstAlias<"mv  $rs",   (ADDri GPR:$rs,  0)>;
+
 // def : Pattern<(simm16:$imm), 
 //                 [(MSI GPROpnd: $rd, (LO8Sext imm:$imm)), (MHI (HI8 imm: $imm))] >;
-
+// FIXME: Add MHI Instruction as well.
 def : Pat<(simm16:$imm), (MSI (LO8Sext imm:$imm))>;
 
-def MoveImm16Ty : SDTypeProfile<1, 1, [
-  SDTCisSameAs<0, 1>, SDTCisInt<0>
-]>;
+def addr : ComplexPattern<iPTR, 1, "SelectAddr", [frameindex], []>;
 
-
-def load_sym : SDNode<"SAYACISD::LOAD_SYM", SDTIntUnaryOp>;
-
-def movei16 : SDNode<"SAYACISD::MOVEi16", MoveImm16Ty>;
-
-
-def MOVi16 : InstSAYAC<(outs GPROpnd:$rd), (ins i16imm:$src), "pibopuni $rd $src",
-                     [(set i16: $rd, (movei16 imm:$src))]> {
-  let isPseudo = 1;
-}
-
-def memsrc : Operand<i16> {
-  let MIOperandInfo = (ops GPROpnd, i16imm);
-  let PrintMethod = "printAddrModeMemSrc";
-  let EncoderMethod = "getMemSrcValue";
-}
-
-def addr : ComplexPattern<iPTR, 2, "SelectAddr", [], []>;
+let mayStore = 1 in 
+def STR : F_Store<0b00, (outs), (ins GPR: $rd, GPR: $rs1),
+                    "str $rd $rs1",
+                    []
+                    >;
 
 let mayLoad = 1 in 
-def LDR: F_Load<0b00, (outs GPROpnd:$rd), (ins memsrc:$addr),
-                  "ldr $rd $addr",
-                  [(set i16: $rd, (load addr:$addr))]
+def LDR: F_Load<0b00, (outs GPR:$rd), (ins GPR:$rs1),
+                  "ldr $rd $rs1",
+                  []
                   >;
 
-let mayStore = 1 in
-def STR: F_Store<0b00, (outs GPROpnd:$rd), (ins memsrc:$addr),
-                  "str $rd $addr",
-                  [(store i16:$rd, addr:$addr)]
-                  >;
 
-def : Pattern<(i16 (load_sym tglobaladdr:$addr)),  [(MOVi16 $addr)]>;
+multiclass StPat<PatFrag StoreOp, InstSAYAC Inst> {
+  def : Pat<(StoreOp GPR:$rs2, GPR:$rs1), (Inst GPR:$rs2, GPR:$rs1)>;
+  def : Pat<(StoreOp GPR:$rs2, addr:$rs1), (Inst GPR:$rs2, addr:$rs1)>;
+  // def : Pat<(StoreOp GPROpnd:$rs2, (add GPROpnd:$rs1, simm12:$imm12)),
+  //           (Inst GPROpnd:$rs2, GPROpnd:$rs1, simm12:$imm12)>;
+  // def : Pat<(StoreOp GPROpnd:$rs2, (add AddrFI:$rs1, simm12:$imm12)),
+  //           (Inst GPROpnd:$rs2, AddrFI:$rs1, simm12:$imm12)>;
+  // def : Pat<(StoreOp GPROpnd:$rs2, (IsOrAdd AddrFI:$rs1, simm12:$imm12)),
+  //           (Inst GPROpnd:$rs2, AddrFI:$rs1, simm12:$imm12)>;
+}
+
+defm : StPat<truncstorei16, STR>;
+defm : StPat<store, STR>;
+
+
+multiclass LdPat<PatFrag LoadOp, InstSAYAC Inst> {
+  def : Pat<(LoadOp GPR:$rs1), (Inst GPR:$rs1)>;  
+  def : Pat<(LoadOp addr:$rs1), (Inst addr:$rs1)>;
+  // def : Pat<(LoadOp (add GPROpnd:$rs1, simm16:$imm16)),
+  //           (Inst GPROpnd:$rs1)>;
+  // def : Pat<(LoadOp (add AddrFI:$rs1, simm12:$imm12)),
+  //           (Inst AddrFI:$rs1, simm12:$imm12)>;
+  // def : Pat<(LoadOp (IsOrAdd AddrFI:$rs1, simm12:$imm12)),
+  //           (Inst AddrFI:$rs1, simm12:$imm12)>;
+}
+
+defm : LdPat<sextloadi16, LDR>;
+defm : LdPat<extloadi16, LDR>;
+defm : LdPat<load, LDR>;
+
+// def MoveImm16Ty : SDTypeProfile<1, 1, [
+//   SDTCisSameAs<0, 1>, SDTCisInt<0>
+// ]>;
+
+// def load_sym : SDNode<"SAYACISD::LOAD_SYM", SDTIntUnaryOp>;
+
+// def movei16 : SDNode<"SAYACISD::MOVEi16", MoveImm16Ty>;
+
+// def MOVi16 : InstSAYAC<(outs GPROpnd:$rd), (ins i16imm:$src), "pibopuni $rd $src",
+//                      [(set i16: $rd, (movei16 imm:$src))]> {
+//   let isPseudo = 1;
+// }
+
+// def memsrc : Operand<i16> {
+//   let MIOperandInfo = (ops GPROpnd, i16imm);
+//   let PrintMethod = "printAddrModeMemSrc";
+//   let EncoderMethod = "getMemSrcValue";
+// }
+
+// let mayLoad = 1 in 
+// def LDR: F_Load<0b00, (outs GPROpnd:$rd), (ins memsrc:$addr),
+//                   "ldr $rd $addr",
+//                   [(set i16: $rd, (load addr:$addr))]
+//                   >;
+
+// let mayStore = 1 in
+// def STR: F_Store<0b00, (outs GPROpnd:$rd), (ins memsrc:$addr),
+//                   "str $rd $addr",
+//                   [(store i16:$rd, addr:$addr)]
+//                   >;
+
+
+// let mayStore = 1 in
+// def STR: F_Store<0b00, (outs), (ins GPROpnd:$rs1, memsrc:$rd),
+//                   "str $rd $rs1",
+//                   [(store i16:$rs1, addr:$rd)]
+//                   >;
+
+// let mayLoad = 1 in 
+// def LDR: F_Load<0b00, (outs GPROpnd:$rd), (ins memsrc:$rs1),
+//                   "ldr $rd $rs1",
+//                   [(set GPROpnd: $rd, (load addr:$rs1))]
+//                   >;
+
+
+// def : Pattern<(i16 (load_sym tglobaladdr:$addr)),  [(MOVi16 $addr)]>;
+
+// def : Pattern<(store i16imm:$rd, addr:$addr), [(STR (MSI (LO8Sext i16imm:$rd)), $addr)]>;
+
+// def : Pattern<(store i16:$rd, addr:$addr), [(STR (MSI (LO8Sext i16imm:$rd)), $addr)]>;
 
 
 class PCRelAsmOperand<string size> : ImmediateAsmOperand<"PCRel"#size> {
