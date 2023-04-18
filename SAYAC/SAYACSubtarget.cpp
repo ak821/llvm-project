@@ -28,4 +28,4 @@ void SAYACSubtarget::anchor() {}
 SAYACSubtarget::SAYACSubtarget(const Triple &TT, const std::string &CPU,
                              const std::string &FS, const TargetMachine &TM)
     : SAYACGenSubtargetInfo(TT, CPU, /*TuneCPU*/ CPU, FS), TargetTriple(TT),
-      InstrInfo(*this), TLInfo(TM, *this), FrameLowering() {}
+      InstrInfo(*this), TLInfo(TM, *this), FrameLowering(*this) {}

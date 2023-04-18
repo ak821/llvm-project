@@ -65,10 +65,12 @@ inline uint64_t RoundUpToAlignment(uint64_t Value, uint64_t Align,
   return (Value + Align - 1 - Skew) / Align * Align + Skew;
 }
 
-SAYACFrameLowering::SAYACFrameLowering()
-    : TargetFrameLowering(TargetFrameLowering::StackGrowsDown, Align(16), 0,
-                          Align(16), false /* StackRealignable */),
-      RegSpillOffsets(0) {}
+SAYACFrameLowering::SAYACFrameLowering(const SAYACSubtarget &STI)
+    : TargetFrameLowering(TargetFrameLowering::StackGrowsDown,
+                          Align(8) /*16bit architecture*/, 0, Align(8),
+                          false /* StackRealignable */),
+      RegSpillOffsets(0),
+      STI(STI) {}
 
 uint64_t SAYACFrameLowering::computeStackSize(MachineFunction &MF) const {
   MachineFrameInfo MFI = MF.getFrameInfo();
@@ -85,17 +87,21 @@ uint64_t SAYACFrameLowering::computeStackSize(MachineFunction &MF) const {
 void SAYACFrameLowering::emitPrologue(MachineFunction &MF,
                                     MachineBasicBlock &MBB) const {
   // Compute the stack size, to determine if we need a prologue at all.
+  MachineFrameInfo &MFI = MF.getFrameInfo();
   const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
   MachineBasicBlock::iterator MBBI = MBB.begin();
   DebugLoc dl = MBBI != MBB.end() ? MBBI->getDebugLoc() : DebugLoc();
-  uint64_t StackSize = computeStackSize(MF);
-  dbgs() << StackSize << '\n';
+
+  determineFrameLayout(MF);
+
+  uint64_t StackSize = MFI.getStackSize();
+  // dbgs() << StackSize << '\n';
   if (!StackSize) {
     return;
   }
 
   // Adjust the stack pointer.
-  unsigned StackReg = SAYAC::R13; // Stack Pointer
+  unsigned StackReg = SAYAC::R2; // Stack Pointer
   unsigned OffsetReg = materializeOffset(MF, MBB, MBBI, (unsigned)StackSize);
   if (OffsetReg) {
     BuildMI(MBB, MBBI, dl, TII.get(SAYAC::SUBrr), StackReg)
@@ -123,7 +129,7 @@ void SAYACFrameLowering::emitEpilogue(MachineFunction &MF,
   }
 
   // Restore the stack pointer to what it was at the beginning of the function.
-  unsigned StackReg = SAYAC::R13;   // Stack Pointer
+  unsigned StackReg = SAYAC::R2;   // Stack Pointer
   unsigned OffsetReg = materializeOffset(MF, MBB, MBBI, (unsigned)StackSize);
   if (OffsetReg) {
     BuildMI(MBB, MBBI, dl, TII.get(SAYAC::ADDrr), StackReg)
@@ -139,4 +145,39 @@ void SAYACFrameLowering::emitEpilogue(MachineFunction &MF,
 }
 
 
-bool SAYACFrameLowering::hasFP(const MachineFunction &MF) const { return false; }
+bool SAYACFrameLowering::hasFP(const MachineFunction &MF) const {
+  return true;
+  // const TargetRegisterInfo *RegInfo = MF.getSubtarget().getRegisterInfo();
+
+  // const MachineFrameInfo &MFI = MF.getFrameInfo();
+  // return MF.getTarget().Options.DisableFramePointerElim(MF) ||
+  //        RegInfo->needsStackRealignment(MF) || MFI.hasVarSizedObjects() ||
+  //        MFI.isFrameAddressTaken();
+}
+
+// Determines the size of the frame and maximum call frame size.
+void SAYACFrameLowering::determineFrameLayout(MachineFunction &MF) const {
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  const SAYACRegisterInfo *RI = STI.getRegisterInfo();
+
+  // Get the number of bytes to allocate from the FrameInfo.
+  uint64_t FrameSize = MFI.getStackSize();
+
+  // Get the alignment.
+  unsigned StackAlign = getStackAlignment();
+  if (RI->needsStackRealignment(MF)) {
+    unsigned MaxStackAlign = std::max(StackAlign, MFI.getMaxAlignment());
+    FrameSize += (MaxStackAlign - StackAlign);
+    StackAlign = MaxStackAlign;
+  }
+
+  // Set Max Call Frame Size
+  uint64_t MaxCallSize = alignTo(MFI.getMaxCallFrameSize(), StackAlign);
+  MFI.setMaxCallFrameSize(MaxCallSize);
+
+  // Make sure the frame is aligned.
+  FrameSize = alignTo(FrameSize, StackAlign);
+
+  // Update frame info.
+  MFI.setStackSize(FrameSize);
+}

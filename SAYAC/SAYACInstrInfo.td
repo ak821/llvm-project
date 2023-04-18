@@ -36,15 +36,27 @@ def retflag          : SDNode<"SAYACISD::RET_FLAG", SDTNone,
 
 
 def ADDrr  : F_LAR<0b1001,
-                   (outs GPROpnd:$rd), (ins GPROpnd:$rs1, GPROpnd:$rs2),
-                   "adr $rs1, $rs2, $rd",
-                   [(set GPROpnd:$rd, (add GPROpnd:$rs1, GPROpnd:$rs2))]>;
-
+                   (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
+                   "adr $rd, $rs1, $rs2",
+                   [(set GPR:$rd, (add GPR:$rs1, GPR:$rs2))]>;
 
 def SUBrr  : F_LAR<0b1010,
-                   (outs GPROpnd:$rd), (ins GPROpnd:$rs1, GPROpnd:$rs2),
-                   "sur $rs1, $rs2, $rd",
-                   [(set GPROpnd:$rd, (sub GPROpnd:$rs1, GPROpnd:$rs2))]>;
+                   (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
+                   "sur $rd, $rs1, $rs2",
+                   [(set GPR:$rd, (sub GPR:$rs1, GPR:$rs2))]>;
+
+//TODO: result greater than 16bit
+def MUL  : F_LAR<0b1101,
+                   (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
+                   "mul $rd, $rs1, $rs2",
+                   [(set GPR:$rd, (mul GPR:$rs1, GPR:$rs2))]>;
+
+def ANDrr  : F_LAR<0b0011,
+                   (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
+                   "anr $rd, $rs1, $rs2",
+                   [(set GPR:$rd, (and GPR:$rs1, GPR:$rs2))]>;
+
+
 
 
 // Bits 0-7.
@@ -139,6 +151,14 @@ def SUBri : F_LAI<0b1100,
                  (outs GPR:$rd), (ins GPR: $rs, imm16zx8:$imm8),
                  "sui $rs $imm8",
                  [(set GPR:$rd, (sub GPR:$rs, imm16zx8:$imm8))]
+                 > {
+                  let Constraints = "$rd = $rs";
+                 }
+
+def ANDri : F_LAI<0b0100,
+                 (outs GPR:$rd), (ins GPR: $rs, imm16zx8:$imm8),
+                 "ani $rs $imm8",
+                 [(set GPR:$rd, (and GPR:$rs, imm16zx8:$imm8))]
                  > {
                   let Constraints = "$rd = $rs";
                  }
@@ -284,6 +304,24 @@ let isCompare = 1 in {
 }
 
 
+
+// Logical NOT
+def NTR2c : F_NTR<0b1, 
+                 (outs GPR:$rd), (ins GPR: $rs),
+                 "ntr2 $rd $rs",
+                 [(set GPR:$rd, (not GPR:$rs))]
+                 > ;
+
+def NTD2c : F_NTD<0b1, 
+                 (outs GPR:$rd), (ins GPR: $rs),
+                 "ntd2 $rs",
+                 [(set GPR:$rd, (not GPR:$rs))]
+                 > 
+                 {
+                  let Constraints = "$rd = $rs";
+                 }
+
+//TODO: NTR1c and NTD1c (see SAYAC ISR)
 
 
 

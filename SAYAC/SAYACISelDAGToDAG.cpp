@@ -96,7 +96,7 @@ void SAYACDAGToDAGISel::Select(SDNode *Node) {
   // Instruction Selection not handled by the auto-generated tablegen selection
   // should be handled here.
 
-  Node->dump();
+  // Node->dump();
 
   // if (Node->getOpcode() == ISD::LOAD) {
   //   if(cast<LoadSDNode>(*Node).getAddressingMode() == ISD::UNINDEXED) dbgs() << "YES\n";

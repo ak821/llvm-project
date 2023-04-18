@@ -12,6 +12,7 @@
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -31,7 +32,7 @@ void SAYACInstPrinter::printOperand(const MCInst *MI, int OpNum,
     if (!MO.getReg())
       O << '0';
     else
-      O << '%' << getRegisterName(MO.getReg());
+      O << getRegisterName(MO.getReg());
   } else if (MO.isImm())
     O << MO.getImm();
   else if (MO.isExpr())
@@ -46,7 +47,7 @@ void SAYACInstPrinter::printOperand(const MCOperand &MO, const MCAsmInfo *MAI,
     if (!MO.getReg())
       O << '0';
     else
-      O << '%' << getRegisterName(MO.getReg());
+      O << getRegisterName(MO.getReg());
   } else if (MO.isImm())
     O << MO.getImm();
   else if (MO.isExpr())
@@ -129,4 +130,8 @@ void SAYACInstPrinter::printAddrModeMemSrc(const MCInst *MI, unsigned OpNum,
   //   O << ", #" << Offset;
   // }
   O << "]";
+}
+
+const char *SAYACInstPrinter::getRegisterName(unsigned RegNo) {
+  return getRegisterName(RegNo, 0);
 }

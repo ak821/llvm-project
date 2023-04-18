@@ -44,6 +44,10 @@ public:
   void copyPhysReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
                    const DebugLoc &DL, MCRegister DstReg, MCRegister SrcReg,
                    bool KillSrc) const override;
+  // Materializes the given integer Val into DstReg.
+  void movImm(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+              const DebugLoc &DL, Register DstReg, uint16_t Val,
+              MachineInstr::MIFlag Flag = MachineInstr::NoFlags) const;
 };
 
 } // end namespace llvm

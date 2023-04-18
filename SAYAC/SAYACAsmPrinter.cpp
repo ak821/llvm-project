@@ -79,7 +79,7 @@ void SAYACAsmPrinter::emitInstruction(const MachineInstr *MI) {
     SeteqflagMI = MCInstBuilder(SAYAC::CMIri)
                             .addReg(SAYAC::R0).addImm(0);
     EmitToStreamer(*OutStreamer, SeteqflagMI);
-    LoweredMI = MCInstBuilder(SAYAC::BRCeq).addReg(SAYAC::R12);
+    LoweredMI = MCInstBuilder(SAYAC::BRCeq).addReg(SAYAC::R1);
     break;
 
   default:

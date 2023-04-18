@@ -32,6 +32,7 @@ public:
   void printInstruction(const MCInst *MI, uint64_t Address,
                         const MCSubtargetInfo &STI, raw_ostream &O);
   static const char *getRegisterName(unsigned RegNo);
+  static const char *getRegisterName(unsigned RegNo, unsigned AltIdx);
 
   // Print the given operand.
   void printOperand(const MCInst *MI, int OpNum, const MCSubtargetInfo &STI,

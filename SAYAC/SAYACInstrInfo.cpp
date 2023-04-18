@@ -61,3 +61,27 @@ void SAYACInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
   BuildMI(MBB, I, I->getDebugLoc(), get(SAYAC::ADDri), DestReg)
       .addReg(SrcReg, getKillRegState(KillSrc));
 }
+
+void SAYACInstrInfo::movImm(MachineBasicBlock &MBB,
+                            MachineBasicBlock::iterator MBBI,
+                            const DebugLoc &DL, Register DstReg, uint16_t Val,
+                            MachineInstr::MIFlag Flag) const {
+  MachineFunction *MF = MBB.getParent();
+  MachineRegisterInfo &MRI = MF->getRegInfo();
+
+  int16_t Hi8 = ((Val + 0x80) >> 8) & 0xFF;
+  int16_t Lo8 = SignExtend64<8>(Val);
+
+  if(!Hi8) {
+    BuildMI(MBB, MBBI, DL, get(SAYAC::MSI), DstReg)
+        .addImm(Lo8)
+        .setMIFlag(Flag);
+  } else {
+    BuildMI(MBB, MBBI, DL, get(SAYAC::MSI), DstReg)
+        .addImm(Lo8)
+        .setMIFlag(Flag);
+    BuildMI(MBB, MBBI, DL, get(SAYAC::MHI), DstReg)
+        .addImm(Hi8)
+        .setMIFlag(Flag);
+  }
+}

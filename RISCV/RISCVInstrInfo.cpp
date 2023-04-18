@@ -437,7 +437,7 @@ unsigned RISCVInstrInfo::insertIndirectBranch(MachineBasicBlock &MBB,
   MachineInstr &MI = *BuildMI(MBB, II, DL, get(RISCV::PseudoJump))
                           .addReg(ScratchReg, RegState::Define | RegState::Dead)
                           .addMBB(&DestBB, RISCVII::MO_CALL);
-
+                          
   RS->enterBasicBlockEnd(MBB);
   unsigned Scav = RS->scavengeRegisterBackwards(RISCV::GPRRegClass,
                                                 MI.getIterator(), false, 0);

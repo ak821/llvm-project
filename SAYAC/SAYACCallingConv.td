@@ -17,10 +17,10 @@ def CC_SAYAC : CallingConv<[
   CCIfType<[i1, i8], CCPromoteToType<i16>>,
 
   // Register R12 is used to pass structure return pointer.
-  CCIfSRet<CCIfType<[i16], CCAssignToReg<[R12]>>>,
+ // CCIfSRet<CCIfType<[i16], CCAssignToReg<[R12]>>>,
 
-  // Registers R2 to R6 are used for passing parameters.
-  CCIfType<[i16], CCAssignToReg<[R2, R3, R4, R5, R6]>>,
+  // Registers R7 to 11 are used for passing parameters.
+  CCIfType<[i16], CCAssignToReg<[R7, R8, R9, R10, R11]>>,
 
   // Other arguments are passed on the stack, at least 4-byte-aligned.
   CCAssignToStack<2, 2>
@@ -28,10 +28,10 @@ def CC_SAYAC : CallingConv<[
 
 // SAYAC 16-bit ELF C return-value convention.
 def RetCC_SAYAC : CallingConv<[
-  // 16-bit values are returned in R2, 32-bit values in pair R2/R3.
-  CCIfType<[i16,f16], CCAssignToReg<[R2]>>,
-  CCIfType<[i32,f32], CCAssignToReg<[R2, R3]>>
+  // 16-bit values are returned in R7, 32-bit values in pair R7/R8.
+  CCIfType<[i16,f16], CCAssignToReg<[R7]>>,
+  CCIfType<[i32,f32], CCAssignToReg<[R7, R8]>>
 ]>;
 
 // SAYAC 16-bit ELF C callee saved registers.
-def CSR_SAYAC : CalleeSavedRegs<(add (sequence "R%d", 10, 12), R13)>;
+def CSR_SAYAC : CalleeSavedRegs<(add R1, (sequence "R%d", 3, 6) )>;

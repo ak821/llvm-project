@@ -168,6 +168,31 @@ class MOV<bits<4> Opc, dag outs, dag ins, string asmstr,
     let Inst{3-0} = rd;
 }
 
+//Format: Logical NOT
+class F_NOT<bits<1> ex_func, dag outs, dag ins, string asmstr,
+            list<dag> pattern, InstrItinClass itin = NoItinerary>
+            : InstSAYAC<outs, ins, asmstr, pattern, itin> {
+    bits<4> rd;
+    let Inst{15-10} = 0b111111;
+    let Inst{8} = ex_func;
+    let Inst{3-0} = rd;
+}
+
+class F_NTR <bits<1> ex_func, dag outs, dag ins, string asmstr, 
+            list<dag> pattern, InstrItinClass itin = NoItinerary>
+            : F_NOT<ex_func, outs, ins, asmstr, pattern, itin> {
+  bits<4> rs;
+  let Inst{9} = 0b0;
+  let Inst{7-4} = rs;
+}
+
+class F_NTD <bits<1> ex_func, dag outs, dag ins, string asmstr, 
+            list<dag> pattern, InstrItinClass itin = NoItinerary>
+            : F_NOT<ex_func, outs, ins, asmstr, pattern, itin> {
+  let Inst{9} = 0b1;
+}
+
+
 
 // class F_L<dag outs, dag ins, string asmstr, list<dag> pattern,
 //           InstrItinClass itin = NoItinerary>

@@ -40,43 +40,70 @@ BitVector SAYACRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   BitVector Reserved(getNumRegs());
 
   // R2 is the stack pointer.
-  // Reserved.set(SAYAC::R2);
+  markSuperRegs(Reserved, SAYAC::R2);
 
   // R0 is wired to zero
-  // Reserved.set(SAYAC::R0);
+  markSuperRegs(Reserved, SAYAC::R0);
 
   // R15 stores flag bits
-  // Reserved.set(SAYAC::R15);
+  markSuperRegs(Reserved, SAYAC::R15);
+
+  // R1 stores return address
+  markSuperRegs(Reserved, SAYAC::R1);
 
   return Reserved;
+}
+
+bool SAYACRegisterInfo::isConstantPhysReg(MCRegister PhysReg) const {
+  return PhysReg == SAYAC::R0;
 }
 
 void SAYACRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
                                            int SPAdj, unsigned FIOperandNum,
                                            RegScavenger *RS) const {
   MachineInstr &MI = *II;
-  const MachineFunction &MF = *MI.getParent()->getParent();
+  MachineFunction &MF = *MI.getParent()->getParent();
   const MachineFrameInfo MFI = MF.getFrameInfo();
+  MachineRegisterInfo &MRI = MF.getRegInfo();
+  const SAYACInstrInfo *TII = MF.getSubtarget<SAYACSubtarget>().getInstrInfo();
   MachineOperand &FIOp = MI.getOperand(FIOperandNum);
+
   unsigned FI = FIOp.getIndex();
 
   // Determine if we can eliminate the index from this kind of instruction
-  unsigned ImmOpIdx = 0;
   switch (MI.getOpcode()) {
     default:
       // Not yet supported
       return;
     case SAYAC::LDR:
     case SAYAC::STR:
-    //   ImmOpIdx = FIOperandNum + 1;
       break;
   }
 
+  MachineBasicBlock &MBB = *MI.getParent();
+  DebugLoc DL = MI.getDebugLoc();
+
+  Register FrameReg = getFrameRegister(MF);
+
   // FIXME: check the size of offset.
-  // MachineOperand &ImmOp = MI.getOperand(ImmOpIdx);
-  // int Offset = MFI.getObjectOffset(FI) + MFI.getStackSize() + ImmOp.getImm();
-  FIOp.ChangeToRegister(SAYAC::R13, false);
-  // ImmOp.setImm(Offset);
+  int Offset = MFI.getObjectOffset(FI) + MFI.getStackSize();
+  bool FrameRegIsKill = false;
+
+  
+
+  assert(isInt<16>(Offset) && "Int16 expected");
+  // Use a scratch register
+  // Modify Offset and FrameReg appropriately
+  Register ScratchReg = MRI.createVirtualRegister(&SAYAC::GPRRegClass);
+  TII->movImm(MBB, II, DL, ScratchReg, Offset);
+  BuildMI(MBB, II, DL, TII->get(SAYAC::ADDrr), ScratchReg)
+      .addReg(FrameReg)
+      .addReg(ScratchReg, RegState::Kill);
+  
+  FrameReg = ScratchReg;
+  FrameRegIsKill = true;
+
+  FIOp.ChangeToRegister(FrameReg, false, false, FrameRegIsKill);
 
 }
 

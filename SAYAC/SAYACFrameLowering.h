@@ -19,9 +19,13 @@ class SAYACSubtarget;
 class SAYACFrameLowering : public TargetFrameLowering {
   IndexedMap<unsigned> RegSpillOffsets;
   uint64_t computeStackSize(MachineFunction &MF) const;
+  void determineFrameLayout(MachineFunction &MF) const;
+
+protected:
+  const SAYACSubtarget &STI;
 
 public:
-  SAYACFrameLowering();
+  SAYACFrameLowering(const SAYACSubtarget &STI);
 
   // Override TargetFrameLowering.
   void emitPrologue(MachineFunction &MF, MachineBasicBlock &MBB) const override;
