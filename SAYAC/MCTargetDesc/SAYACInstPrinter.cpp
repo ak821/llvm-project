@@ -113,6 +113,7 @@ void SAYACInstPrinter::printPCRelOperand(const MCInst *MI, uint64_t Address,
 void SAYACInstPrinter::printInst(const MCInst *MI, uint64_t Address,
                                 StringRef Annot, const MCSubtargetInfo &STI,
                                 raw_ostream &O) {
+                                  // MI->dump();
   printInstruction(MI, Address, STI, O);
   printAnnotation(O, Annot);
                                 }

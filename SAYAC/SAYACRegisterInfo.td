@@ -49,3 +49,6 @@ def GPR : RegisterClass<"SAYAC", [i16], 16,
                             )>;
 
 def GPROpnd : RegisterOperand<GPR>;
+
+def XLenVT : ValueTypeByHwMode<[SAYACMode],
+                               [i16]>;

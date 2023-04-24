@@ -48,6 +48,10 @@ public:
   void movImm(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
               const DebugLoc &DL, Register DstReg, uint16_t Val,
               MachineInstr::MIFlag Flag = MachineInstr::NoFlags) const;
+
+  void expandBranch(MachineInstr &MI, unsigned BranchInstr, bool isUnsignedCmp) const;
+
+  virtual bool expandPostRAPseudo(MachineInstr &MI) const override;
 };
 
 } // end namespace llvm

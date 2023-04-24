@@ -112,6 +112,17 @@ public:
     return Kind == OpKind_Imm && inRange(Imm, MinValue, MaxValue);
   }
 
+  bool isImmShift() {
+    if (!isImm())
+      return false;
+
+    const MCConstantExpr *ConstExpr = dyn_cast<MCConstantExpr>(Imm);
+    if (!ConstExpr)
+      return false;
+    int64_t Value = ConstExpr->getValue();
+    return (Value >= -15) && (Value <= 15);
+  }
+
   const MCExpr *getImm() const {
     assert(isImm() && "Invalid type access!");
     return Imm;
@@ -156,6 +167,11 @@ public:
 
   void addImmOperands(MCInst &Inst, unsigned N) const {
     assert(N == 1 && "Invalid number of operands");
+    addExpr(Inst, getImm());
+  }
+
+  void addImmShiftOperands(MCInst &Inst, unsigned N) const {
+    assert(N == 1 && "Invalid number of operands!");
     addExpr(Inst, getImm());
   }
 

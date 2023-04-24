@@ -95,15 +95,26 @@ class F_Store<bits<2> ex_func,
   let Inst{11-10} = 0b01;
 }
 
+// class F_CH<bits<7> func,
+//                dag outs, dag ins, string asmstr, list<dag> pattern,
+//                InstrItinClass itin = NoItinerary>
+//    : InstSAYAC<outs, ins, asmstr, pattern, itin> {
+//   bits<10> d10;
+
+//   let Inst{15-9} = func;
+
+//   let Inst{9-0}  = d10;
+// }
+
 class F_CH<bits<7> func,
                dag outs, dag ins, string asmstr, list<dag> pattern,
                InstrItinClass itin = NoItinerary>
    : InstSAYAC<outs, ins, asmstr, pattern, itin> {
-  bits<10> d10;
+  bits<4> rd;
 
   let Inst{15-9} = func;
 
-  let Inst{9-0}  = d10;
+  let Inst{3-0}  = rd;
 }
 
 
@@ -156,9 +167,26 @@ class F_COMPARE<bits<1> ex_func, dag outs, dag ins, string asmstr,
     let Inst{3-0} = rd;
 }
 
+class F_CMR<bits<1> ex_func, dag outs, dag ins, string asmstr, 
+           list<dag> pattern, InstrItinClass itin = NoItinerary>
+          : F_COMPARE<ex_func, outs, ins, asmstr, pattern, itin> {
+    bits<4> rs;
+
+    let Inst{7-4}  = rs;
+}
+
+class F_CMI<bits<1> ex_func, dag outs, dag ins, string asmstr, 
+           list<dag> pattern, InstrItinClass itin = NoItinerary>
+          : F_COMPARE<ex_func, outs, ins, asmstr, pattern, itin> {
+    bits<5> imm;
+
+    let Inst{8-4}  = imm;
+}
+
+
 // Format: Move
 
-class MOV<bits<4> Opc, dag outs, dag ins, string asmstr,
+class F_MOV<bits<4> Opc, dag outs, dag ins, string asmstr,
             list<dag> pattern, InstrItinClass itin = NoItinerary>
             : InstSAYAC<outs, ins, asmstr, pattern, itin> {
     bits<4> rd;
@@ -167,6 +195,31 @@ class MOV<bits<4> Opc, dag outs, dag ins, string asmstr,
     let Inst{11-4} = imm;
     let Inst{3-0} = rd;
 }
+
+
+class F_MOV_Symbol<bits<4> Opc, dag outs, dag ins, string asmstr,
+            list<dag> pattern, InstrItinClass itin = NoItinerary>
+            : InstSAYAC<outs, ins, asmstr, pattern, itin> {
+    bits<4> rd;
+    bits<8> d8;
+    let Inst{15-12} = Opc;
+    let Inst{11-4} = d8;
+    let Inst{3-0} = rd;
+}
+
+//Format: Shift Immediate
+class F_SHI<bits<1> ex_func, dag outs, dag ins, string asmstr,
+            list<dag> pattern, InstrItinClass itin = NoItinerary>
+            : InstSAYAC<outs, ins, asmstr, pattern, itin> {
+    bits<4> rd;
+    bits<5> imm;
+    let Inst{15-10} = 0b111110;
+    let Inst{9} = ex_func;
+    let Inst{8-4} = imm;
+    let Inst{3-0} = rd;
+}
+
+
 
 //Format: Logical NOT
 class F_NOT<bits<1> ex_func, dag outs, dag ins, string asmstr,

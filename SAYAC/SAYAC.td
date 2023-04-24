@@ -19,6 +19,8 @@ include "llvm/Target/Target.td"
 // SAYAC Subtarget features.
 //
 
+def SAYACMode : HwMode<"">;
+
 //===----------------------------------------------------------------------===//
 // Register File, Calling Conv, Instruction Descriptions
 //===----------------------------------------------------------------------===//

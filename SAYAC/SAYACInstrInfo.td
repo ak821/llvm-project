@@ -56,14 +56,18 @@ def ANDrr  : F_LAR<0b0011,
                    "anr $rd, $rs1, $rs2",
                    [(set GPR:$rd, (and GPR:$rs1, GPR:$rs2))]>;
 
+let isPseudo = 1 in {
+def ORrr  : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
+                            "ORrr $rd $rs1 $rs2", [] >;
 
+def XORrr  : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
+                            "XORrr $rd $rs1 $rs2", [] >;
 
+}
 
-// Bits 0-7.
-def LO8 : SDNodeXForm<imm, [{
-  uint32_t Value = N->getZExtValue() & 0x00000000000000FFULL;
-  return CurDAG->getTargetConstant(Value, SDLoc(N), MVT::i16);
-}]>;
+def : Pat<(or GPR:$rs1, GPR:$rs2), (ORrr $rs1, $rs2)>;
+def : Pat<(xor GPR:$rs1, GPR:$rs2), (XORrr $rs1, $rs2)>;
+
 
 def U8Imm : ImmediateAsmOperand<"U8Imm">;
 def U5Imm : ImmediateAsmOperand<"U5Imm">;
@@ -89,6 +93,12 @@ multiclass Immediate<ValueType vt, code pred, SDNodeXForm xform, string asmop> {
   def _timm : ImmOpWithPattern<vt, asmop, pred, xform, timm>;
 }
 
+
+def NEG : SDNodeXForm<imm, [{
+  return CurDAG->getTargetConstant(-N->getSExtValue(), SDLoc(N), N->getValueType(0));
+}]>;
+
+
 defm imm16zx8 : Immediate<i16, [{
   return (N->getZExtValue() & ~0x00000000000000ffULL) == 0;
 }], NOOP_SDNodeXForm, "U8Imm">;
@@ -98,11 +108,24 @@ defm imm16zx5 : Immediate<i16, [{
 }], NOOP_SDNodeXForm, "U5Imm">;
 
 def simm16     : ImmLeaf<i16, [{return isInt<16>(Imm);}]>;
+def simm12     : ImmLeaf<i16, [{return isInt<12>(Imm);}]>;
+def simm8     : ImmLeaf<i16, [{return isInt<8>(Imm);}]>;
+def simm5     : ImmLeaf<i16, [{return isInt<5>(Imm);}]>;
 
 // Extract least significant 8 bits from an immediate value and sign extend
 // them.
 def LO8Sext : SDNodeXForm<imm, [{
   return CurDAG->getTargetConstant(SignExtend32<8>(N->getZExtValue()),
+                                   SDLoc(N), N->getValueType(0));
+}]>;
+
+def LO5Sext : SDNodeXForm<imm, [{
+  return CurDAG->getTargetConstant(SignExtend32<5>(N->getZExtValue()),
+                                   SDLoc(N), N->getValueType(0));
+}]>;
+
+def Lo5SextNEG : SDNodeXForm<imm, [{
+  return CurDAG->getTargetConstant(-SignExtend32<5>(N->getZExtValue()),
                                    SDLoc(N), N->getValueType(0));
 }]>;
 
@@ -129,14 +152,46 @@ def uimm8_m: Operand<i16> {
   let ParserMatchClass = UImmAsmOperand<8, "m">;
 }
 
+
+class PCRelAsmOperand<string size> : ImmediateAsmOperand<"PCRel"#size> {
+  let PredicateMethod = "isImm";
+  let ParserMethod = "parsePCRel"#size;
+}
+
+class PCRelOperand<ValueType vt, AsmOperandClass asmop> : Operand<vt> {
+  let PrintMethod = "printPCRelOperand";
+  let ParserMatchClass = asmop;
+  let OperandType = "OPERAND_PCREL";
+}
+
+def PCRel10 : PCRelAsmOperand<"10">;
+
+// Replace 10 with 8 here and in functions as well...
+def brtarget8 : PCRelOperand<OtherVT, PCRel10> {
+  let EncoderMethod = "getPC10Encoding";
+  let DecoderMethod = "decodePC10BranchOperand";
+}
+
+
+def ImmShiftAsmOperand : AsmOperandClass { let Name = "ImmShift"; }
+def immShift : Operand<i16>, PatLeaf<(imm), [{
+    int Imm = N->getSExtValue();
+    return Imm >= -15 && Imm <= 15;}]> {
+  let ParserMatchClass = ImmShiftAsmOperand;
+}
+
+
+
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0,
 isReMaterializable = 1, isAsCheapAsAMove = 1 in {
-def MSI : MOV<0b0101, (outs GPROpnd:$rd), (ins uimm8_m:$imm8),
+def MSI : F_MOV<0b0101, (outs GPROpnd:$rd), (ins uimm8_m:$imm8),
                   "msi $rd, $imm8", []>;
 
-def MHI : MOV<0b0110, (outs GPROpnd: $rd), (ins uimm8_m:$imm8),
+def MHI : F_MOV<0b0110, (outs GPROpnd: $rd), (ins uimm8_m:$imm8),
                 "mhi $rd $imm8", []>;
 
+def MSym : F_MOV_Symbol<0b0101, (outs GPR: $rd), (ins brtarget8: $d8),
+                    "msi $rd $d8", []>;
 }
 
 def ADDri : F_LAI<0b1011,
@@ -163,12 +218,17 @@ def ANDri : F_LAI<0b0100,
                   let Constraints = "$rd = $rs";
                  }
 
+
 // def MOVrr : InstAlias<"mv  $rs",   (ADDri GPR:$rs,  0)>;
 
 // def : Pattern<(simm16:$imm), 
-//                 [(MSI GPROpnd: $rd, (LO8Sext imm:$imm)), (MHI (HI8 imm: $imm))] >;
+//                 [(MSI GPROpnd: $rd, (LO8Sext imm:$imm)), (MHI (HI8 $imm))] >;
+
+def : Pat<(simm8:$imm), (MSI (LO8Sext $imm))>;
 // FIXME: Add MHI Instruction as well.
-def : Pat<(simm16:$imm), (MSI (LO8Sext imm:$imm))>;
+
+
+def : Pat<(simm16: $imm), (ADDri (MHI (HI8 $imm)), (LO8Sext $imm))>;
 
 def addr : ComplexPattern<iPTR, 1, "SelectAddr", [frameindex], []>;
 
@@ -267,41 +327,232 @@ defm : LdPat<load, LDR>;
 // def : Pattern<(store i16:$rd, addr:$addr), [(STR (MSI (LO8Sext i16imm:$rd)), $addr)]>;
 
 
-class PCRelAsmOperand<string size> : ImmediateAsmOperand<"PCRel"#size> {
-  let PredicateMethod = "isImm";
-  let ParserMethod = "parsePCRel"#size;
+// Logical Shift
+def SLR  : F_LAR<0b0111,
+                   (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
+                   "slr $rd, $rs1, $rs2",
+                   []>;
+
+// Arithmetic Shift
+def SAR  : F_LAR<0b1000,
+                   (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
+                   "sar $rd, $rs1, $rs2",
+                   []>;
+
+// Logical Shift Immediate
+def SHIl : F_SHI<0b0, 
+                   (outs GPR:$rd), (ins GPR:$rs, immShift:$imm),
+                   "shil $rs, $imm",
+                   []>{
+                      let Constraints = "$rd = $rs";
+                    }
+
+// Arithmetic Shift Immediate
+def SHIa : F_SHI<0b1, 
+                   (outs GPR:$rd), (ins GPR:$rs, immShift:$imm),
+                   "shia $rs, $imm",
+                   []>{
+                      let Constraints = "$rd = $rs";
+                    }
+
+def : Pat<(shl GPR:$rs1, immShift: $imm), (SHIl GPR: $rs1, (NEG $imm ))>;
+def : Pat<(srl GPR:$rs1, immShift:$imm), (SHIl GPR:$rs1,  $imm  ) >;
+def : Pat<(sra GPR:$rs1, immShift:$imm), (SHIa GPR:$rs1,  $imm  ) >;
+
+def : Pat<(shl GPR:$rs1, immShift: $imm), (SLR GPR: $rs1, (MSI (Lo5SextNEG $imm )))>;
+def : Pat<(srl GPR:$rs1, immShift:$imm), (SLR GPR:$rs1, (MSI (LO5Sext $imm )) ) >;
+def : Pat<(sra GPR:$rs1, immShift:$imm), (SAR GPR:$rs1, (MSI (LO5Sext $imm )) ) >;
+
+
+/// Generic pattern classes
+
+// class PatGprGpr<SDPatternOperator OpNode, InstSAYAC Inst>
+//     : Pat<(OpNode GPR:$rs1, GPR:$rs2), (Inst GPR:$rs1, GPR:$rs2)>;
+// class PatGprSimm5<SDPatternOperator OpNode, InstSAYAC Inst>
+//     : Pat<(OpNode GPR:$rs1, simm5:$imm12), (Inst GPR:$rs1, simm5:$imm12)>;
+
+// Comapare Instructions
+let isCompare = 1 in {
+  def CMR : F_CMR<0b0, (outs), (ins GPR:$rs,  GPR:$rd),
+                     "cmr $rs $rd", []>;
+  // def CMI : F_CMI<0b1, (outs), (ins GPR:$rd, imm16zx5: $imm),
+  //                    "cmi $imm $rd", []> ;
+  // def CMRS : F_CMR<0b0, (outs), (ins GPR:$rs,  GPR:$rd),
+  //                    "cmrs $rs $rd", []> ;
+  def CMI : F_CMI<0b1, (outs), (ins GPR:$rd, imm16zx5: $imm),
+                     "cmi $imm $rd", []> ;
+  // def CMIri : F_COMPARE<0b1, (outs), (ins GPROpnd:$rd, imm16zx8:$imm5),
+  //                    "cmi $imm5 $rd", []> ;
 }
 
-class PCRelOperand<ValueType vt, AsmOperandClass asmop> : Operand<vt> {
-  let PrintMethod = "printPCRelOperand";
-  let ParserMatchClass = asmop;
-  let OperandType = "OPERAND_PCREL";
+let isPseudo = 1 in {
+  def SEQ : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
+                            "SEQ $rd $rs1 $rs2", [] >;
+  def SNE : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
+                            "SEQ $rd $rs1 $rs2", [] >;
+  def SUGT : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
+                            "SUGT $rd $rs1 $rs2", [] >;
+  def SUGE : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
+                            "SUGE $rd $rs1 $rs2", [] >;
+  def SULT : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
+                            "SULT $rd $rs1 $rs2", [] >;
+  def SULE : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
+                            "SULE $rd $rs1 $rs2", [] >;
+  def SGT : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
+                            "SGT $rd $rs1 $rs2", [] >;
+  def SGE : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
+                            "SGE $rd $rs1 $rs2", [] >;
+  def SLT : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
+                            "SLT $rd $rs1 $rs2", [] >;
+  def SLE : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
+                            "SLE $rd $rs1 $rs2", [] >;
 }
 
-def PCRel10 : PCRelAsmOperand<"10">;
 
-def brtarget10 : PCRelOperand<OtherVT, PCRel10> {
-  let EncoderMethod = "getPC10Encoding";
-  let DecoderMethod = "decodePC10BranchOperand";
-}
+def : Pat<(seteq GPR:$rs1, GPR:$rs2), (SEQ $rs1, $rs2)>;
+def : Pat<(setne GPR:$rs1, GPR:$rs2), (SEQ $rs1, $rs2)>;
+def : Pat<(setugt GPR:$rs1, GPR:$rs2), (SUGT $rs1, $rs2)>;
+def : Pat<(setuge GPR:$rs1, GPR:$rs2), (SUGE $rs1, $rs2)>;
+def : Pat<(setult GPR:$rs1, GPR:$rs2), (SULT $rs1, $rs2)>;
+def : Pat<(setule GPR:$rs1, GPR:$rs2), (SULE $rs1, $rs2)>;
+
+def : Pat<(setgt  GPR:$rs1, GPR:$rs2), (SGT $rs1, $rs2)>;
+def : Pat<(setge  GPR:$rs1, GPR:$rs2), (SGT $rs1, $rs2)>;
+def : Pat<(setlt  GPR:$rs1, GPR:$rs2), (SGT $rs1, $rs2)>;
+def : Pat<(setle  GPR:$rs1, GPR:$rs2), (SGT $rs1, $rs2)>;
 
 
-def BR : F_CH<0b1100000, (outs), (ins brtarget10:$d10), "br $d10",
-                    [(br bb:$d10)]>;
+// def : PatGprGpr<seteq, SEQ>;
+// def : PatGprSimm12<setlt, SLTI>;
+// def : PatGprGpr<setult, SLTU>;
+// def : PatGprSimm12<setult, SLTIU>;
 
-let isReturn = 1, isTerminator = 1, isBarrier = 1, Uses = [R1] in {
+//def: Pattern<(seteq GPR:$rs, GPR:$rd), [(CMR GPR:$rs, GPR:$rd), (SHI (AND SAYAC::R15, (MSI 16) ), 4  )]>;
+//def: Pattern<(setne GPR:$rs, GPR:$rd), [(CMR GPR:$rs, GPR:$rd), (SHI (AND SAYAC::R15, (MSI 16) ), 4  )]>;
+
+
+
+let isPseudo = 1 in 
+def PJMR : InstSAYAC<(outs GPR: $rd), (ins brtarget8: $d8), "pjmr $d8",
+                    [(set GPR:$rd, (br bb:$d8))]>;
+// def PJMR : F_CH<0b0010100, (outs GPR: $rd), (ins brtarget8: $d8), "pjmr $d8",
+//                     [(set GPR:$rd, (br bb:$d8))]>;
+
+def JMR : F_CH<0b0010100, (outs), (ins GPR: $rd), "jmr $rd", []>;
+
+// def checkE : Pat<(br bb:$imm12), (JMR (MSI $imm12))>;
+
+let isReturn = 1, isTerminator = 1, isBarrier = 1 in {
   def RET : Pseudo<(outs), (ins), [(retflag)]>;
 }
 
-let isBranch = 1, isTerminator = 1, isBarrier = 1 in {
+let hasSideEffects = 0, mayLoad = 0, mayStore = 0, isBranch = 1, isTerminator = 1 in {
   def BRCeq : F_BRANCH<0b0, 0b000, (outs), (ins GPROpnd:$rd),
                      "brc 0x0 $rd", []>;
 }
 
-let isCompare = 1 in {
-  def CMIri : F_COMPARE<0b1, (outs), (ins GPROpnd:$rd, imm16zx8:$imm5),
-                     "cmi $imm5 $rd", []> ;
+let hasSideEffects = 0, mayLoad = 0, mayStore = 0, isBranch = 1, isTerminator = 1 in {
+  def BRReq : F_BRANCH<0b1, 0b000, (outs), (ins GPROpnd:$rd),
+                     "brr 0x0 $rd", []>;
+  def BRRne : F_BRANCH<0b1, 0b101, (outs), (ins GPROpnd:$rd),
+                     "brr 0x5 $rd", []>;
+  def BRRgt : F_BRANCH<0b1, 0b010, (outs), (ins GPROpnd:$rd),
+                     "brr 0x2 $rd", []>;
+  def BRRge : F_BRANCH<0b1, 0b011, (outs), (ins GPROpnd:$rd),
+                     "brr 0x3 $rd", []>;
+  def BRRlt : F_BRANCH<0b1, 0b001, (outs), (ins GPROpnd:$rd),
+                     "brr 0x1 $rd", []>;
+  def BRRle : F_BRANCH<0b1, 0b100, (outs), (ins GPROpnd:$rd),
+                     "brr 0x4 $rd", []>;
 }
+
+def CCSIOp : PatLeaf<(cond), [{
+  switch (N->get()) {
+  default:          return true;
+  case ISD::SETULT:
+  case ISD::SETULE:
+  case ISD::SETUGT:
+  case ISD::SETUGE: return false;
+  }
+}]>;
+
+let isPseudo = 1 in {
+  def CBeq : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+                            "cmpbeq $rs1 $rs2 $imm8", [] >;
+  def CBne : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+                            "cmpbne $rs1 $rs2 $imm8", [] >;
+  def CBugt : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+                            "cmpbugt $rs1 $rs2 $imm8", [] >;
+  def CBuge : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+                            "cmpbuge $rs1 $rs2 $imm8", [] >;
+  def CBult : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+                            "cmpbult $rs1 $rs2 $imm8", [] >;
+  def CBule : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+                            "cmpbule $rs1 $rs2 $imm8", [] >;
+  def CBgt : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+                            "cmpbgt $rs1 $rs2 $imm8", [] >;
+  def CBge : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+                            "cmpbge $rs1 $rs2 $imm8", [] >;
+  def CBlt : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+                            "cmpblt $rs1 $rs2 $imm8", [] >;
+  def CBle : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+                            "cmpble $rs1 $rs2 $imm8", [] >;
+}
+
+
+// class BccPat<PatFrag CondOp, InstSAYAC Inst>
+//     : Pat<(brcond (XLenVT (CondOp GPR:$rs1, GPR:$rs2)), bb:$imm12),
+//           (CmpBranch GPR:$rs1, GPR:$rs2, brtarget8:$imm8)>;
+          // (Inst GPR:$rs1, GPR:$rs2, simm13_lsb0:$imm8)>;
+
+class BccPat<PatFrag CondOp, InstSAYAC Inst>
+    : Pat<(brcond (XLenVT (CondOp GPR:$rs1, GPR:$rs2)), bb:$imm8),
+          (Inst GPR:$rs1, GPR:$rs2, brtarget8:$imm8)>;
+
+
+
+// class BccPat<PatFrag CondOp, InstSAYAC Inst>
+//     : Pat<(brcc CCSIOp:$cond, GPR:$rs1, GPR:$rs2, bb:$imm12),
+//           (CmpBranch GPR:$rs1, GPR:$rs2, brtarget8:$imm8, brtarget8:$cond)>;
+
+
+// def : BccPat<seteq, BRRne>;
+// def : BccPat<setne, BRRne>;
+
+
+def : BccPat<seteq,   CBeq>;
+def : BccPat<setne,   CBne>;
+def : BccPat<setugt,  CBugt>;
+def : BccPat<setuge,  CBuge>;
+def : BccPat<setult,  CBult>;
+def : BccPat<setule,  CBule>;
+def : BccPat<setgt,   CBgt>;
+def : BccPat<setge,   CBge>;
+def : BccPat<setlt,   CBlt>;
+def : BccPat<setle,   CBle>;
+
+
+// def : BccPat<setlt, BRRlt>;
+// def : BccPat<setge, BRRge>;
+// def : BccPat<setult, BLTU>;
+// def : BccPat<setuge, BGEU>;
+
+// class BccSwapPat<PatFrag CondOp, InstSAYAC Inst>
+//     : Pattern<(brcond (CondOp GPR:$rs1, GPR:$rs2), bb:$imm12),
+//           [(CMRS GPR:$rs2, GPR:$rs1), (Inst (simm16:$imm12))]>;
+//           // (Inst GPR:$rs2, GPR:$rs1, bb:$imm12)>;
+
+// // Condition codes that don't have matching RISC-V branch instructions, but
+// // are trivially supported by swapping the two input operands
+// def : BccSwapPat<setgt, BRRlt>;
+// def : BccSwapPat<setle, BRRge>;
+// def : BccSwapPat<setugt, BLTU>;
+// def : BccSwapPat<setule, BGEU>;
+
+// An extra pattern is needed for a brcond without a setcc (i.e. where the
+// condition was calculated elsewhere).
+// def : Pattern<(brcond GPR:$cond, bb:$imm12), [(CMRS GPR:$cond, R0), (BRRne (bb:$imm12))]>;
+// def : Pat<(brcond GPR:$cond, bb:$imm12), (CmpBranch $cond, R0, $imm12)>;
 
 
 
@@ -322,6 +573,10 @@ def NTD2c : F_NTD<0b1,
                  }
 
 //TODO: NTR1c and NTD1c (see SAYAC ISR)
+
+
+
+
 
 
 

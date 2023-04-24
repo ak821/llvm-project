@@ -76,7 +76,7 @@ void SAYACAsmPrinter::emitInstruction(const MachineInstr *MI) {
   MCInst SeteqflagMI ;
   switch (MI->getOpcode()) {
   case SAYAC::RET:
-    SeteqflagMI = MCInstBuilder(SAYAC::CMIri)
+    SeteqflagMI = MCInstBuilder(SAYAC::CMI)
                             .addReg(SAYAC::R0).addImm(0);
     EmitToStreamer(*OutStreamer, SeteqflagMI);
     LoweredMI = MCInstBuilder(SAYAC::BRCeq).addReg(SAYAC::R1);

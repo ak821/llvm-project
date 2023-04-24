@@ -94,6 +94,8 @@ SAYACTargetLowering::SAYACTargetLowering(const TargetMachine &TM,
   // setOperationAction(ISD::CTLZ, MVT::i32, Custom);
   setOperationAction(ISD::CTTZ, MVT::i16, Expand);
 
+  setOperationAction(ISD::BR_CC, MVT::i16, Expand);
+
   // Special DAG combiner for bit-field operations.
   setTargetDAGCombine(ISD::AND);
   setTargetDAGCombine(ISD::OR);
