@@ -81,6 +81,13 @@ void SAYACAsmPrinter::emitInstruction(const MachineInstr *MI) {
     EmitToStreamer(*OutStreamer, SeteqflagMI);
     LoweredMI = MCInstBuilder(SAYAC::BRCeq).addReg(SAYAC::R1);
     break;
+  case SAYAC::JMRS:
+  {
+    LoweredMI = MCInstBuilder(SAYAC::JMRS)
+    .addReg(MI->getOperand(0).getReg())
+    .addReg(MI->getOperand(1).getReg());
+    break;
+  }
 
   default:
     SAYACMCInstLower Lower(MF->getContext(), *this);

@@ -29,8 +29,16 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeSAYACTarget() {
 namespace {
 // TODO: Check.
 std::string computeDataLayout(const Triple &TT, StringRef CPU, StringRef FS) {
-  std::string Ret = "e-m:e-p:16:16-i32:16-i64:16-f32:16-f64:16-a:8-n8:16-S16";
-  return Ret;
+  // Data layout (keep in sync with clang/lib/Basic/Targets/SAYAC.h)
+  // std::string Ret = "e-m:e-p:16:16-i32:16-i64:16-f32:16-f64:16-a:8-n8:16-S16";
+  // return Ret;
+  return "e"        // little endian
+         "-m:e"     // ELF name manging
+         "-p:16:16" // 16-bit pointers, 16 bit aligned
+         "-i32:16"  // 32 bit integers, 16 bit aligned
+         "-a:0:16"  // 16 bit alignment of objects of aggregate type
+         "-n16"     // 16 bit native integer width
+         "-S16";    // 16 bit natural stack alignment
 
   // Big endian.
   // Ret += "E";

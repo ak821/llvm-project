@@ -17,8 +17,8 @@
 // Selection DAG types.
 
 // These are target-independent nodes, but have target-specific formats.
-def SDT_CallSeqStart : SDCallSeqStart<[SDTCisVT<0, i32>, SDTCisVT<1, i32>]>;
-def SDT_CallSeqEnd   : SDCallSeqEnd<[SDTCisVT<0, i32>, SDTCisVT<1, i32>]>;
+def SDT_CallSeqStart : SDCallSeqStart<[SDTCisVT<0, i16>, SDTCisVT<1, i16>]>;
+def SDT_CallSeqEnd   : SDCallSeqEnd<[SDTCisVT<0, i16>, SDTCisVT<1, i16>]>;
 def SDT_Call         : SDTypeProfile<0, -1, [SDTCisPtrTy<0>]>;
 
 class ImmediateAsmOperand<string name> : AsmOperandClass {
@@ -31,29 +31,36 @@ class ImmediateAsmOperand<string name> : AsmOperandClass {
 def call             : SDNode<"SAYACISD::CALL", SDT_Call,
                               [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
                               SDNPVariadic]>;
+
+def callseq_start : SDNode<"ISD::CALLSEQ_START", SDT_CallSeqStart,
+                           [SDNPHasChain, SDNPOutGlue]>;
+def callseq_end   : SDNode<"ISD::CALLSEQ_END", SDT_CallSeqEnd,
+                           [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue]>;
+
 def retflag          : SDNode<"SAYACISD::RET_FLAG", SDTNone,
                               [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
 
+def load_sym : SDNode<"SAYACISD::LOAD_SYM", SDTIntUnaryOp>;
 
 def ADDrr  : F_LAR<0b1001,
                    (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
-                   "adr $rd, $rs1, $rs2",
+                   "adr $rd $rs1 $rs2",
                    [(set GPR:$rd, (add GPR:$rs1, GPR:$rs2))]>;
 
 def SUBrr  : F_LAR<0b1010,
                    (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
-                   "sur $rd, $rs1, $rs2",
+                   "sur $rd $rs1 $rs2",
                    [(set GPR:$rd, (sub GPR:$rs1, GPR:$rs2))]>;
 
 //TODO: result greater than 16bit
 def MUL  : F_LAR<0b1101,
                    (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
-                   "mul $rd, $rs1, $rs2",
+                   "mul $rd $rs1 $rs2",
                    [(set GPR:$rd, (mul GPR:$rs1, GPR:$rs2))]>;
 
 def ANDrr  : F_LAR<0b0011,
                    (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
-                   "anr $rd, $rs1, $rs2",
+                   "anr $rd $rs1 $rs2",
                    [(set GPR:$rd, (and GPR:$rs1, GPR:$rs2))]>;
 
 let isPseudo = 1 in {
@@ -185,15 +192,18 @@ def immShift : Operand<i16>, PatLeaf<(imm), [{
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0,
 isReMaterializable = 1, isAsCheapAsAMove = 1 in {
 def MSI : F_MOV<0b0101, (outs GPROpnd:$rd), (ins uimm8_m:$imm8),
-                  "msi $rd, $imm8", []>;
+                  "msi $rd $imm8", []>;
 
 def MHI : F_MOV<0b0110, (outs GPROpnd: $rd), (ins uimm8_m:$imm8),
                 "mhi $rd $imm8", []>;
 
 def MSym : F_MOV_Symbol<0b0101, (outs GPR: $rd), (ins brtarget8: $d8),
-                    "msi $rd $d8", []>;
+                    "msym $rd $d8", []>;
 }
 
+// ADDri isn't always rematerializable, but isReMaterializable will be used as
+// a hint which is verified in isReallyTriviallyReMaterializable.
+let isReMaterializable = 1, isAsCheapAsAMove = 1 in
 def ADDri : F_LAI<0b1011,
                  (outs GPR:$rd), (ins GPR: $rs, imm16zx8:$imm8),
                  "adi $rs $imm8",
@@ -232,6 +242,26 @@ def : Pat<(simm16: $imm), (ADDri (MHI (HI8 $imm)), (LO8Sext $imm))>;
 
 def addr : ComplexPattern<iPTR, 1, "SelectAddr", [frameindex], []>;
 
+def IsOrAdd: PatFrag<(ops node:$A, node:$B), (or node:$A, node:$B), [{
+  return isOrEquivalentToAdd(N);
+}]>;
+
+// FrameIndex
+let isPseudo = 1 in 
+def FI : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs, imm16zx8:$imm8),
+                 "fi $rs $imm8",
+                 []
+                 >;
+
+/// FrameIndex calculations
+
+
+def : Pat<(add (i16 addr:$Rs), simm8:$imm8),
+          (FI (i16 addr:$Rs), simm8:$imm8)>;
+def : Pat<(IsOrAdd (i16 addr:$Rs), simm8:$imm8),
+          (FI (i16 addr:$Rs), simm8:$imm8)>;
+
+
 let mayStore = 1 in 
 def STR : F_Store<0b00, (outs), (ins GPR: $rd, GPR: $rs1),
                     "str $rd $rs1",
@@ -246,8 +276,8 @@ def LDR: F_Load<0b00, (outs GPR:$rd), (ins GPR:$rs1),
 
 
 multiclass StPat<PatFrag StoreOp, InstSAYAC Inst> {
-  def : Pat<(StoreOp GPR:$rs2, GPR:$rs1), (Inst GPR:$rs2, GPR:$rs1)>;
-  def : Pat<(StoreOp GPR:$rs2, addr:$rs1), (Inst GPR:$rs2, addr:$rs1)>;
+  def : Pat<(StoreOp GPR:$rs1, GPR:$rs2), (Inst GPR:$rs2, GPR:$rs1)>;
+  def : Pat<(StoreOp GPR:$rs1, addr:$rs2), (Inst GPR:$rs2, addr:$rs1)>;
   // def : Pat<(StoreOp GPROpnd:$rs2, (add GPROpnd:$rs1, simm12:$imm12)),
   //           (Inst GPROpnd:$rs2, GPROpnd:$rs1, simm12:$imm12)>;
   // def : Pat<(StoreOp GPROpnd:$rs2, (add AddrFI:$rs1, simm12:$imm12)),
@@ -279,14 +309,31 @@ defm : LdPat<load, LDR>;
 //   SDTCisSameAs<0, 1>, SDTCisInt<0>
 // ]>;
 
-// def load_sym : SDNode<"SAYACISD::LOAD_SYM", SDTIntUnaryOp>;
-
 // def movei16 : SDNode<"SAYACISD::MOVEi16", MoveImm16Ty>;
 
-// def MOVi16 : InstSAYAC<(outs GPROpnd:$rd), (ins i16imm:$src), "pibopuni $rd $src",
-//                      [(set i16: $rd, (movei16 imm:$src))]> {
+// def MOVi16 : InstSAYAC<(outs GPR:$rd), (ins i16imm:$src), "",
+//                      []> {
 //   let isPseudo = 1;
 // }
+
+def MOVi16sym : InstSAYAC<(outs GPR:$rd), (ins i16imm:$src), "Mi16sym $src",
+                     []> {
+  let isPseudo = 1;
+}
+
+
+let mayStore = 1 in 
+def PSTR : F_Store<0b00, (outs), (ins GPR: $rd, GPR: $rs1),
+                    "str $rd $rs1",
+                    []
+                    >;
+
+let mayLoad = 1 in 
+def PLDR: F_Load<0b00, (outs GPR:$rd), (ins GPR:$rs1),
+                  "ldr $rd $rs1",
+                  []
+                  >;
+
 
 // def memsrc : Operand<i16> {
 //   let MIOperandInfo = (ops GPROpnd, i16imm);
@@ -320,7 +367,7 @@ defm : LdPat<load, LDR>;
 //                   >;
 
 
-// def : Pattern<(i16 (load_sym tglobaladdr:$addr)),  [(MOVi16 $addr)]>;
+def : Pat<(i16 (load_sym tglobaladdr:$addr)), (MOVi16sym $addr)>;
 
 // def : Pattern<(store i16imm:$rd, addr:$addr), [(STR (MSI (LO8Sext i16imm:$rd)), $addr)]>;
 
@@ -432,15 +479,24 @@ def : Pat<(setle  GPR:$rs1, GPR:$rs2), (SGT $rs1, $rs2)>;
 
 
 
-let isPseudo = 1 in 
-def PJMR : InstSAYAC<(outs GPR: $rd), (ins brtarget8: $d8), "pjmr $d8",
+let isPseudo = 1 in {
+  def PJMR : InstSAYAC<(outs GPR: $rd), (ins brtarget8: $d8), "pjmr $d8",
                     [(set GPR:$rd, (br bb:$d8))]>;
-// def PJMR : F_CH<0b0010100, (outs GPR: $rd), (ins brtarget8: $d8), "pjmr $d8",
-//                     [(set GPR:$rd, (br bb:$d8))]>;
+  def pcall : InstSAYAC<(outs GPR: $rd), (ins GPR: $addr), "pcall $addr", []>;
+  def PJMRS : InstSAYAC<(outs), (ins GPR: $addr), "pjmrs $addr", []>;
+}
 
+
+let isTerminator = 1 in {
 def JMR : F_CH<0b0010100, (outs), (ins GPR: $rd), "jmr $rd", []>;
+}
 
-// def checkE : Pat<(br bb:$imm12), (JMR (MSI $imm12))>;
+let isTerminator = 1, isCall = 1, Defs = [R1] in {
+  def JMRS : F_CH<0b0010101, (outs GPR: $rd), (ins GPR: $rs), "jmrs $rd $rs", []>;
+}
+
+
+def : Pat<(call i16: $addr), (PJMRS i16: $addr)>;
 
 let isReturn = 1, isTerminator = 1, isBarrier = 1 in {
   def RET : Pseudo<(outs), (ins), [(retflag)]>;
@@ -477,44 +533,32 @@ def CCSIOp : PatLeaf<(cond), [{
 }]>;
 
 let isPseudo = 1 in {
-  def CBeq : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+  def CBeq : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
                             "cmpbeq $rs1 $rs2 $imm8", [] >;
-  def CBne : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+  def CBne : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
                             "cmpbne $rs1 $rs2 $imm8", [] >;
-  def CBugt : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+  def CBugt : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
                             "cmpbugt $rs1 $rs2 $imm8", [] >;
-  def CBuge : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+  def CBuge : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
                             "cmpbuge $rs1 $rs2 $imm8", [] >;
-  def CBult : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+  def CBult : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
                             "cmpbult $rs1 $rs2 $imm8", [] >;
-  def CBule : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+  def CBule : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
                             "cmpbule $rs1 $rs2 $imm8", [] >;
-  def CBgt : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+  def CBgt : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
                             "cmpbgt $rs1 $rs2 $imm8", [] >;
-  def CBge : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+  def CBge : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
                             "cmpbge $rs1 $rs2 $imm8", [] >;
-  def CBlt : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+  def CBlt : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
                             "cmpblt $rs1 $rs2 $imm8", [] >;
-  def CBle : InstSAYAC<(outs), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
+  def CBle : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2, brtarget8:$imm8),
                             "cmpble $rs1 $rs2 $imm8", [] >;
 }
 
 
-// class BccPat<PatFrag CondOp, InstSAYAC Inst>
-//     : Pat<(brcond (XLenVT (CondOp GPR:$rs1, GPR:$rs2)), bb:$imm12),
-//           (CmpBranch GPR:$rs1, GPR:$rs2, brtarget8:$imm8)>;
-          // (Inst GPR:$rs1, GPR:$rs2, simm13_lsb0:$imm8)>;
-
 class BccPat<PatFrag CondOp, InstSAYAC Inst>
     : Pat<(brcond (XLenVT (CondOp GPR:$rs1, GPR:$rs2)), bb:$imm8),
           (Inst GPR:$rs1, GPR:$rs2, brtarget8:$imm8)>;
-
-
-
-// class BccPat<PatFrag CondOp, InstSAYAC Inst>
-//     : Pat<(brcc CCSIOp:$cond, GPR:$rs1, GPR:$rs2, bb:$imm12),
-//           (CmpBranch GPR:$rs1, GPR:$rs2, brtarget8:$imm8, brtarget8:$cond)>;
-
 
 // def : BccPat<seteq, BRRne>;
 // def : BccPat<setne, BRRne>;
@@ -576,8 +620,14 @@ def NTD2c : F_NTD<0b1,
 
 
 
-
-
+let Defs = [R2], Uses = [R2], isPseudo = 1 in {
+def ADJCALLSTACKDOWN : InstSAYAC<(outs), (ins i16imm:$amt1, i16imm:$amt2),
+                                    "# ADJCALLSTACKDOWN $amt1",
+                                    [(callseq_start timm:$amt1, timm:$amt2)]>;
+def ADJCALLSTACKUP   : InstSAYAC<(outs), (ins i16imm:$amt1, i16imm:$amt2),
+                                    "# ADJCALLSTACKUP $amt1",
+                                    [(callseq_end timm:$amt1, timm:$amt2)]>;
+}
 
 
 // def m88k_clr : SDNode<"M88kISD::CLR", SDTIntBinOp>;

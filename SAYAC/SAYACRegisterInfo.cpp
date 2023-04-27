@@ -70,43 +70,71 @@ void SAYACRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 
   unsigned FI = FIOp.getIndex();
 
-  // Determine if we can eliminate the index from this kind of instruction
-  switch (MI.getOpcode()) {
-    default:
-      // Not yet supported
-      return;
-    case SAYAC::LDR:
-    case SAYAC::STR:
-      break;
-  }
-
   MachineBasicBlock &MBB = *MI.getParent();
   DebugLoc DL = MI.getDebugLoc();
 
-  Register FrameReg = getFrameRegister(MF);
+  Register BaseReg = getFrameRegister(MF);
 
   // FIXME: check the size of offset.
-  int Offset = MFI.getObjectOffset(FI) + MFI.getStackSize();
-  bool FrameRegIsKill = false;
+  int Offset = -MFI.getObjectOffset(FI) ;
+
+
+  // Determine if we can eliminate the index from this kind of
+  // instruction
+  switch (MI.getOpcode()) {
+  default:
+    // Not yet supported
+    return;
+  case SAYAC::LDR:
+  case SAYAC::STR:
+    break;
+  case SAYAC::FI:
+  {
+    int localOffset = MI.getOperand(2).getImm();
+    Offset -= localOffset; // This gives offset starting from fp.
+
+    Register destReg = MI.getOperand(0).getReg();
+    TII->movImm(MBB, II, DL, destReg, Offset);
+    BuildMI(MBB, II, DL, TII->get(SAYAC::ADDrr), destReg)
+        .addReg(BaseReg)
+        .addReg(destReg);
+
+    MBB.erase(MI);
+    return;
+  }
+  case SAYAC::PSTR:
+  case SAYAC::PLDR:
+  {
+    Offset = -Offset + MFI.getStackSize();
+    BaseReg = SAYAC::R2;
+    break;
+  }
+  }
+
+  bool BaseRegIsKill = false;
 
   
 
   assert(isInt<16>(Offset) && "Int16 expected");
   // Use a scratch register
-  // Modify Offset and FrameReg appropriately
+  // Modify Offset and BaseReg appropriately
   Register ScratchReg = MRI.createVirtualRegister(&SAYAC::GPRRegClass);
   TII->movImm(MBB, II, DL, ScratchReg, Offset);
   BuildMI(MBB, II, DL, TII->get(SAYAC::ADDrr), ScratchReg)
-      .addReg(FrameReg)
+      .addReg(BaseReg)
       .addReg(ScratchReg, RegState::Kill);
-  
-  FrameReg = ScratchReg;
-  FrameRegIsKill = true;
 
-  FIOp.ChangeToRegister(FrameReg, false, false, FrameRegIsKill);
+  BaseReg = ScratchReg;
+  BaseRegIsKill = true;
 
+  FIOp.ChangeToRegister(BaseReg, false, false, BaseRegIsKill);
 }
 
 Register SAYACRegisterInfo::getFrameRegister(const MachineFunction &MF) const {
   return SAYAC::R3;
+}
+
+const uint32_t *SAYACRegisterInfo::getCallPreservedMask(const MachineFunction &MF,
+                                                      CallingConv::ID) const {
+  return CSR_SAYAC_RegMask;
 }

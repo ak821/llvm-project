@@ -96,18 +96,24 @@ void SAYACDAGToDAGISel::Select(SDNode *Node) {
   // Instruction Selection not handled by the auto-generated tablegen selection
   // should be handled here.
 
+  SDLoc DL(Node);
+  EVT VT = Node->getValueType(0);
+
   // Node->dump();
+  switch(Node->getOpcode()) {
+    default:
+      break;
+    case ISD::FrameIndex: {
+      SDValue Imm = CurDAG->getTargetConstant(0, DL, MVT::i16);
+      int FI = cast<FrameIndexSDNode>(Node)->getIndex();
+      SDValue TFI = CurDAG->getTargetFrameIndex(FI, VT);
+      ReplaceNode(Node, CurDAG->getMachineNode(SAYAC::FI, DL, VT, TFI, Imm));
+      return;
+    }
+  }
 
-  // if (Node->getOpcode() == ISD::LOAD) {
-  //   if(cast<LoadSDNode>(*Node).getAddressingMode() == ISD::UNINDEXED) dbgs() << "YES\n";
-  //   else dbgs() << "NO\n";
-  //   // dbgs() << Node->getNumOperands() << '\n';
-  //   // for(int i=0;i<3;++i) 
-  //   //   Node->getOperand(i)->dump();
-  // }
+    // Select the default instruction.
+    SelectCode(Node);
 
-  // Select the default instruction.
-  SelectCode(Node);
-
-  // CurDAG->dump();
+  // Node->dump();
 }

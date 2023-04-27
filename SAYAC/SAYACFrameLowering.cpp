@@ -65,6 +65,17 @@ inline uint64_t RoundUpToAlignment(uint64_t Value, uint64_t Align,
   return (Value + Align - 1 - Skew) / Align * Align + Skew;
 }
 
+static SmallVector<CalleeSavedInfo, 8>
+getNonLibcallCSI(const std::vector<CalleeSavedInfo> &CSI) {
+  SmallVector<CalleeSavedInfo, 8> NonLibcallCSI;
+
+  for (auto &CS : CSI)
+    if (CS.getFrameIdx() >= 0)
+      NonLibcallCSI.push_back(CS);
+
+  return NonLibcallCSI;
+}
+
 SAYACFrameLowering::SAYACFrameLowering(const SAYACSubtarget &STI)
     : TargetFrameLowering(TargetFrameLowering::StackGrowsDown,
                           Align(8) /*16bit architecture*/, 0, Align(8),
@@ -88,6 +99,7 @@ void SAYACFrameLowering::emitPrologue(MachineFunction &MF,
                                     MachineBasicBlock &MBB) const {
   // Compute the stack size, to determine if we need a prologue at all.
   MachineFrameInfo &MFI = MF.getFrameInfo();
+  MachineRegisterInfo &MRI = MF.getRegInfo();
   const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
   MachineBasicBlock::iterator MBBI = MBB.begin();
   DebugLoc dl = MBBI != MBB.end() ? MBBI->getDebugLoc() : DebugLoc();
@@ -102,18 +114,42 @@ void SAYACFrameLowering::emitPrologue(MachineFunction &MF,
 
   // Adjust the stack pointer.
   unsigned StackReg = SAYAC::R2; // Stack Pointer
-  unsigned OffsetReg = materializeOffset(MF, MBB, MBBI, (unsigned)StackSize);
+  unsigned OffsetReg = materializeOffset(MF, MBB, MBBI, -(unsigned)StackSize);
   if (OffsetReg) {
-    BuildMI(MBB, MBBI, dl, TII.get(SAYAC::SUBrr), StackReg)
+    BuildMI(MBB, MBBI, dl, TII.get(SAYAC::ADDrr), StackReg)
         .addReg(StackReg)
         .addReg(OffsetReg)
         .setMIFlag(MachineInstr::FrameSetup);
   } else {
-    BuildMI(MBB, MBBI, dl, TII.get(SAYAC::SUBri), StackReg)
+    BuildMI(MBB, MBBI, dl, TII.get(SAYAC::ADDri), StackReg)
         .addReg(StackReg)
-        .addImm(StackSize)
+        .addImm(-StackSize)
         .setMIFlag(MachineInstr::FrameSetup);
   }
+
+  const auto &CSI = MFI.getCalleeSavedInfo();
+
+  // The frame pointer is callee-saved, and code has been generated for us to
+  // save it to the stack. We need to skip over the storing of callee-saved
+  // registers as the frame pointer must be modified after it has been saved
+  // to the stack, not before.
+  // FIXME: assumes exactly one instruction is used to save each callee-saved
+  // register.
+  std::advance(MBBI, getNonLibcallCSI(CSI).size());
+
+  // Make FP point to top of frame.
+  
+  unsigned FramePointerReg = SAYAC::R3;
+  Register ScratchReg = MRI.createVirtualRegister(&SAYAC::GPRRegClass);
+
+  BuildMI(MBB, MBBI, dl, TII.get(SAYAC::MSI), ScratchReg)
+        .addImm(StackSize)
+        .setMIFlag(MachineInstr::FrameSetup);
+
+  BuildMI(MBB, MBBI, dl, TII.get(SAYAC::ADDrr), FramePointerReg)
+        .addReg(StackReg)
+        .addReg(ScratchReg)
+        .setMIFlag(MachineInstr::FrameSetup);
 }
 
 
@@ -130,6 +166,7 @@ void SAYACFrameLowering::emitEpilogue(MachineFunction &MF,
 
   // Restore the stack pointer to what it was at the beginning of the function.
   unsigned StackReg = SAYAC::R2;   // Stack Pointer
+
   unsigned OffsetReg = materializeOffset(MF, MBB, MBBI, (unsigned)StackSize);
   if (OffsetReg) {
     BuildMI(MBB, MBBI, dl, TII.get(SAYAC::ADDrr), StackReg)
@@ -155,7 +192,7 @@ bool SAYACFrameLowering::hasFP(const MachineFunction &MF) const {
   //        MFI.isFrameAddressTaken();
 }
 
-// Determines the size of the frame and maximum call frame size.
+//Determines the size of the frame and maximum call frame size.
 void SAYACFrameLowering::determineFrameLayout(MachineFunction &MF) const {
   MachineFrameInfo &MFI = MF.getFrameInfo();
   const SAYACRegisterInfo *RI = STI.getRegisterInfo();
@@ -180,4 +217,77 @@ void SAYACFrameLowering::determineFrameLayout(MachineFunction &MF) const {
 
   // Update frame info.
   MFI.setStackSize(FrameSize);
+}
+
+// This function eliminates ADJCALLSTACKDOWN, ADJCALLSTACKUP pseudo
+// instructions
+MachineBasicBlock::iterator SAYACFrameLowering::eliminateCallFramePseudoInstr(
+    MachineFunction &MF, MachineBasicBlock &MBB,
+    MachineBasicBlock::iterator I) const {
+  return MBB.erase(I);
+}
+
+
+void SAYACFrameLowering::determineCalleeSaves(MachineFunction &MF,
+                                              BitVector &SavedRegs,
+                                              RegScavenger *RS) const {
+  TargetFrameLowering::determineCalleeSaves(MF, SavedRegs, RS);
+  // Unconditionally spill RA and FP only if the function uses a frame
+  // pointer.
+  if (hasFP(MF)) {
+    SavedRegs.set(SAYAC::R1);
+    SavedRegs.set(SAYAC::R3);
+  }
+  // // Mark BP as used if function has dedicated base pointer.
+  // if (hasBP(MF))
+  //   SavedRegs.set(RISCVABI::getBPReg());
+}
+
+bool SAYACFrameLowering::spillCalleeSavedRegisters(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
+    ArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
+  if (CSI.empty())
+    return true;
+
+  MachineFunction *MF = MBB.getParent();
+  const TargetInstrInfo &TII = *MF->getSubtarget().getInstrInfo();
+  DebugLoc DL;
+  if (MI != MBB.end() && !MI->isDebugInstr())
+    DL = MI->getDebugLoc();
+
+  // Manually spill values not spilled by libcall.
+  const auto &NonLibcallCSI = getNonLibcallCSI(CSI);
+  for (auto &CS : NonLibcallCSI) {
+    // Insert the spill to the stack frame.
+    Register Reg = CS.getReg();
+    const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
+    TII.storeRegToStackSlot(MBB, MI, Reg, true, CS.getFrameIdx(), RC, TRI);
+  }
+
+  return true;
+}
+
+bool SAYACFrameLowering::restoreCalleeSavedRegisters(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
+    MutableArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
+  if (CSI.empty())
+    return true;
+
+  MachineFunction *MF = MBB.getParent();
+  const TargetInstrInfo &TII = *MF->getSubtarget().getInstrInfo();
+  DebugLoc DL;
+  if (MI != MBB.end() && !MI->isDebugInstr())
+    DL = MI->getDebugLoc();
+
+  // Manually restore values not restored by libcall. Insert in reverse order.
+  // loadRegFromStackSlot can insert multiple instructions.
+  const auto &NonLibcallCSI = getNonLibcallCSI(CSI);
+  for (auto &CS : reverse(NonLibcallCSI)) {
+    Register Reg = CS.getReg();
+    const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
+    TII.loadRegFromStackSlot(MBB, MI, Reg, CS.getFrameIdx(), RC, TRI);
+    assert(MI != MBB.begin() && "loadRegFromStackSlot didn't insert any code!");
+  }
+
+  return true;
 }

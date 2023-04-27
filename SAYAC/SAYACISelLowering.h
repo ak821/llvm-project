@@ -81,6 +81,12 @@ public:
   SDValue LowerCall(CallLoweringInfo &CLI,
                     SmallVectorImpl<SDValue> &InVals) const override;
 
+  SDValue LowerCallResult(SDValue Chain, SDValue InGlue,
+                          CallingConv::ID CallConv, bool isVarArg,
+                          const SmallVectorImpl<ISD::InputArg> &Ins, SDLoc dl,
+                          SelectionDAG &DAG,
+                          SmallVectorImpl<SDValue> &InVals) const;
+
   // LowerGlobalAddress - Emit a constant load to the global address.
   SDValue LowerGlobalAddress(SDValue Op, SelectionDAG& DAG) const;
 };

@@ -52,6 +52,17 @@ public:
   void expandBranch(MachineInstr &MI, unsigned BranchInstr, bool isUnsignedCmp) const;
 
   virtual bool expandPostRAPseudo(MachineInstr &MI) const override;
+  virtual void
+  storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
+                      Register SrcReg, bool isKill, int FrameIndex,
+                      const TargetRegisterClass *RC,
+                      const TargetRegisterInfo *TRI) const override;
+
+  virtual void
+  loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
+                       Register DestReg, int FrameIndex,
+                       const TargetRegisterClass *RC,
+                       const TargetRegisterInfo *TRI) const override;
 };
 
 } // end namespace llvm

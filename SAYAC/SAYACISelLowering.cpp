@@ -97,21 +97,22 @@ SAYACTargetLowering::SAYACTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::BR_CC, MVT::i16, Expand);
 
   // Special DAG combiner for bit-field operations.
-  setTargetDAGCombine(ISD::AND);
-  setTargetDAGCombine(ISD::OR);
-  setTargetDAGCombine(ISD::SHL);
+  // setTargetDAGCombine(ISD::AND);
+  // setTargetDAGCombine(ISD::OR);
+  // setTargetDAGCombine(ISD::SHL);
+
+  // Nodes that require custom lowering
+  setOperationAction(ISD::GlobalAddress, MVT::i16, Custom);
 }
 
 SDValue SAYACTargetLowering::LowerOperation(SDValue Op,
                                            SelectionDAG &DAG) const {
-  // TODO Implement for ops not covered by patterns in .td files.
-  /*
-    switch (Op.getOpcode())
-    {
-    case ISD::SHL:          return lowerShiftLeft(Op, DAG);
-    }
-  */
-  return SDValue();
+  switch (Op.getOpcode()) {
+  default:
+    llvm_unreachable("Unimplemented operand");
+  case ISD::GlobalAddress:
+    return LowerGlobalAddress(Op, DAG);
+  }
 }
 
 namespace {
@@ -371,10 +372,153 @@ SAYACTargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
   return DAG.getNode(SAYACISD::RET_FLAG, DL, MVT::Other, RetOps);
 }
 
-SDValue SAYACTargetLowering::LowerCall(CallLoweringInfo &CLI,
-                                      SmallVectorImpl<SDValue> &InVals) const {
-  llvm_unreachable("SAYAC - LowerCall - Not Implemented");
+// SDValue SAYACTargetLowering::LowerCall(CallLoweringInfo &CLI,
+//                                       SmallVectorImpl<SDValue> &InVals) const {
+//   llvm_unreachable("SAYAC - LowerCall - Not Implemented");
+// }
+
+
+SDValue SAYACTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
+                                     SmallVectorImpl<SDValue> &InVals) const {
+  SelectionDAG &DAG = CLI.DAG;
+  SDLoc &Loc = CLI.DL;
+  SmallVectorImpl<ISD::OutputArg> &Outs = CLI.Outs;
+  SmallVectorImpl<SDValue> &OutVals = CLI.OutVals;
+  SmallVectorImpl<ISD::InputArg> &Ins = CLI.Ins;
+  SDValue Chain = CLI.Chain;
+  SDValue Callee = CLI.Callee;
+  CallingConv::ID CallConv = CLI.CallConv;
+  const bool isVarArg = CLI.IsVarArg;
+
+  CLI.IsTailCall = false;
+
+  if (isVarArg) {
+    llvm_unreachable("Unimplemented");
+  }
+
+  // Analyze operands of the call, assigning locations to each operand.
+  SmallVector<CCValAssign, 16> ArgLocs;
+  CCState CCInfo(CallConv, isVarArg, DAG.getMachineFunction(), ArgLocs,
+                 *DAG.getContext());
+  CCInfo.AnalyzeCallOperands(Outs, CC_SAYAC);
+
+  // Get the size of the outgoing arguments stack space requirement.
+  const unsigned NumBytes = CCInfo.getNextStackOffset();
+
+  Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, Loc);
+
+  SmallVector<std::pair<unsigned, SDValue>, 8> RegsToPass;
+  SmallVector<SDValue, 8> MemOpChains;
+
+  // Walk the register/memloc assignments, inserting copies/loads.
+  for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
+    CCValAssign &VA = ArgLocs[i];
+    SDValue Arg = OutVals[i];
+
+    // We only handle fully promoted arguments.
+    assert(VA.getLocInfo() == CCValAssign::Full && "Unhandled loc info");
+
+    if (VA.isRegLoc()) {
+      RegsToPass.push_back(std::make_pair(VA.getLocReg(), Arg));
+      continue;
+    }
+
+    assert(VA.isMemLoc() &&
+           "Only support passing arguments through registers or via the stack");
+
+    SDValue StackPtr = DAG.getRegister(SAYAC::R2, MVT::i16);
+    SDValue PtrOff = DAG.getIntPtrConstant(VA.getLocMemOffset(), Loc);
+    PtrOff = DAG.getNode(ISD::ADD, Loc, MVT::i16, StackPtr, PtrOff);
+    MemOpChains.push_back(DAG.getStore(Chain, Loc, Arg, PtrOff,
+                                       MachinePointerInfo(), 0));
+  }
+
+  // Emit all stores, make sure they occur before the call.
+  if (!MemOpChains.empty()) {
+    Chain = DAG.getNode(ISD::TokenFactor, Loc, MVT::Other, MemOpChains);
+  }
+
+  // Build a sequence of copy-to-reg nodes chained together with token chain
+  // and flag operands which copy the outgoing args into the appropriate regs.
+  SDValue InFlag;
+  for (auto &Reg : RegsToPass) {
+    Chain = DAG.getCopyToReg(Chain, Loc, Reg.first, Reg.second, InFlag);
+    InFlag = Chain.getValue(1);
+  }
+
+  // We only support calling global addresses.
+  GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee);
+  assert(G && "We only support the calling of global addresses");
+
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  Callee = DAG.getGlobalAddress(G->getGlobal(), Loc, PtrVT, 0);
+
+  std::vector<SDValue> Ops;
+  Ops.push_back(Chain);
+  Ops.push_back(Callee);
+
+  // Add argument registers to the end of the list so that they are known live
+  // into the call.
+  for (auto &Reg : RegsToPass) {
+    Ops.push_back(DAG.getRegister(Reg.first, Reg.second.getValueType()));
+  }
+
+  // Add a register mask operand representing the call-preserved registers.
+  const uint32_t *Mask;
+  const TargetRegisterInfo *TRI = DAG.getSubtarget().getRegisterInfo();
+  Mask = TRI->getCallPreservedMask(DAG.getMachineFunction(), CallConv);
+
+  assert(Mask && "Missing call preserved mask for calling convention");
+  Ops.push_back(DAG.getRegisterMask(Mask));
+
+  if (InFlag.getNode()) {
+    Ops.push_back(InFlag);
+  }
+
+  SDVTList NodeTys = DAG.getVTList(MVT::Other, MVT::Glue);
+
+  // Returns a chain and a flag for retval copy to use.
+  Chain = DAG.getNode(SAYACISD::CALL, Loc, NodeTys, Ops);
+  InFlag = Chain.getValue(1);
+
+  Chain = DAG.getCALLSEQ_END(Chain, DAG.getIntPtrConstant(NumBytes, Loc, true),
+                             DAG.getIntPtrConstant(0, Loc, true), InFlag, Loc);
+  if (!Ins.empty()) {
+    InFlag = Chain.getValue(1);
+  }
+
+  // Handle result values, copying them out of physregs into vregs that we
+  // return.
+  return LowerCallResult(Chain, InFlag, CallConv, isVarArg, Ins, Loc, DAG,
+                         InVals);
 }
+
+SDValue SAYACTargetLowering::LowerCallResult(
+    SDValue Chain, SDValue InGlue, CallingConv::ID CallConv, bool isVarArg,
+    const SmallVectorImpl<ISD::InputArg> &Ins, SDLoc dl, SelectionDAG &DAG,
+    SmallVectorImpl<SDValue> &InVals) const {
+  assert(!isVarArg && "Unsupported");
+
+  // Assign locations to each value returned by this call.
+  SmallVector<CCValAssign, 16> RVLocs;
+  CCState CCInfo(CallConv, isVarArg, DAG.getMachineFunction(), RVLocs,
+                 *DAG.getContext());
+
+  CCInfo.AnalyzeCallResult(Ins, RetCC_SAYAC);
+
+  // Copy all of the result registers out of their specified physreg.
+  for (auto &Loc : RVLocs) {
+    Chain =
+        DAG.getCopyFromReg(Chain, dl, Loc.getLocReg(), Loc.getValVT(), InGlue)
+            .getValue(1);
+    InGlue = Chain.getValue(2);
+    InVals.push_back(Chain.getValue(0));
+  }
+
+  return Chain;
+}
+
+
 
 const char *SAYACTargetLowering::getTargetNodeName(unsigned Opcode) const {
   switch (Opcode) {
