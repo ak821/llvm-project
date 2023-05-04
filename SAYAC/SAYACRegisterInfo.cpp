@@ -76,7 +76,7 @@ void SAYACRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   Register BaseReg = getFrameRegister(MF);
 
   // FIXME: check the size of offset.
-  int Offset = -MFI.getObjectOffset(FI) ;
+  int Offset = MFI.getObjectOffset(FI) ;
 
 
   // Determine if we can eliminate the index from this kind of
@@ -91,7 +91,7 @@ void SAYACRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   case SAYAC::FI:
   {
     int localOffset = MI.getOperand(2).getImm();
-    Offset -= localOffset; // This gives offset starting from fp.
+    Offset += localOffset; // This gives offset starting from fp.
 
     Register destReg = MI.getOperand(0).getReg();
     TII->movImm(MBB, II, DL, destReg, Offset);
@@ -105,7 +105,7 @@ void SAYACRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   case SAYAC::PSTR:
   case SAYAC::PLDR:
   {
-    Offset = -Offset + MFI.getStackSize();
+    Offset = Offset + MFI.getStackSize();
     BaseReg = SAYAC::R2;
     break;
   }

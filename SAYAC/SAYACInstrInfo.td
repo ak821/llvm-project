@@ -42,6 +42,18 @@ def retflag          : SDNode<"SAYACISD::RET_FLAG", SDTNone,
 
 def load_sym : SDNode<"SAYACISD::LOAD_SYM", SDTIntUnaryOp>;
 
+// Bits 0-15.
+def LO16 : SDNodeXForm<imm, [{
+  uint32_t Value = N->getZExtValue() & 0x000000000000FFFFULL;
+  return CurDAG->getTargetConstant(Value, SDLoc(N), MVT::i32);
+}]>;
+
+// Bits 16-31 (counting from the lsb).
+def HI16 : SDNodeXForm<imm, [{
+  uint64_t Value = (N->getZExtValue() & 0x00000000FFFF0000ULL) >> 16;
+  return CurDAG->getTargetConstant(Value, SDLoc(N), MVT::i32);
+}]>;
+
 def ADDrr  : F_LAR<0b1001,
                    (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
                    "adr $rd $rs1 $rs2",
@@ -58,17 +70,27 @@ def MUL  : F_LAR<0b1101,
                    "mul $rd $rs1 $rs2",
                    [(set GPR:$rd, (mul GPR:$rs1, GPR:$rs2))]>;
 
+def DIV  : F_LAR<0b1110,
+                   (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
+                   "div $rd $rs1 $rs2",
+                   [(set GPR:$rd, (sdiv GPR:$rs1, GPR:$rs2))]>;
+
 def ANDrr  : F_LAR<0b0011,
                    (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
                    "anr $rd $rs1 $rs2",
                    [(set GPR:$rd, (and GPR:$rs1, GPR:$rs2))]>;
 
 let isPseudo = 1 in {
-def ORrr  : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
-                            "ORrr $rd $rs1 $rs2", [] >;
+def ORrr  : InstSAYAC<(outs GPR:$rd, GPR: $rd2), (ins GPR: $rs1, GPR: $rs2),
+                            "ORrr $rd $rs1 $rs2", [] >{
+                              let Constraints = "$rd2 = $rs1";
+                            }
 
-def XORrr  : InstSAYAC<(outs GPR:$rd), (ins GPR: $rs1, GPR: $rs2),
-                            "XORrr $rd $rs1 $rs2", [] >;
+def XORrr  : InstSAYAC<(outs GPR:$rd, GPR: $rd2), (ins GPR: $rs1, GPR: $rs2),
+                            "XORrr $rd $rs1 $rs2", [] >{
+                              // let Constraints = "$rd != $rs1, $rd != $rs2";
+                              let Constraints = "@earlyclobber $rd, $rd2 = $rs1";
+                            }
 
 }
 
@@ -118,6 +140,7 @@ def simm16     : ImmLeaf<i16, [{return isInt<16>(Imm);}]>;
 def simm12     : ImmLeaf<i16, [{return isInt<12>(Imm);}]>;
 def simm8     : ImmLeaf<i16, [{return isInt<8>(Imm);}]>;
 def simm5     : ImmLeaf<i16, [{return isInt<5>(Imm);}]>;
+
 
 // Extract least significant 8 bits from an immediate value and sign extend
 // them.
@@ -287,6 +310,7 @@ multiclass StPat<PatFrag StoreOp, InstSAYAC Inst> {
 }
 
 defm : StPat<truncstorei16, STR>;
+defm : StPat<truncstorei8, STR>;
 defm : StPat<store, STR>;
 
 
@@ -389,7 +413,7 @@ def SAR  : F_LAR<0b1000,
 // Logical Shift Immediate
 def SHIl : F_SHI<0b0, 
                    (outs GPR:$rd), (ins GPR:$rs, immShift:$imm),
-                   "shil $rs, $imm",
+                   "shil $imm, $rs",
                    []>{
                       let Constraints = "$rd = $rs";
                     }
@@ -397,7 +421,7 @@ def SHIl : F_SHI<0b0,
 // Arithmetic Shift Immediate
 def SHIa : F_SHI<0b1, 
                    (outs GPR:$rd), (ins GPR:$rs, immShift:$imm),
-                   "shia $rs, $imm",
+                   "shia $imm, $rs",
                    []>{
                       let Constraints = "$rd = $rs";
                     }
@@ -505,21 +529,16 @@ let isReturn = 1, isTerminator = 1, isBarrier = 1 in {
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0, isBranch = 1, isTerminator = 1 in {
   def BRCeq : F_BRANCH<0b0, 0b000, (outs), (ins GPROpnd:$rd),
                      "brc 0x0 $rd", []>;
-}
-
-let hasSideEffects = 0, mayLoad = 0, mayStore = 0, isBranch = 1, isTerminator = 1 in {
-  def BRReq : F_BRANCH<0b1, 0b000, (outs), (ins GPROpnd:$rd),
-                     "brr 0x0 $rd", []>;
-  def BRRne : F_BRANCH<0b1, 0b101, (outs), (ins GPROpnd:$rd),
-                     "brr 0x5 $rd", []>;
-  def BRRgt : F_BRANCH<0b1, 0b010, (outs), (ins GPROpnd:$rd),
-                     "brr 0x2 $rd", []>;
-  def BRRge : F_BRANCH<0b1, 0b011, (outs), (ins GPROpnd:$rd),
-                     "brr 0x3 $rd", []>;
-  def BRRlt : F_BRANCH<0b1, 0b001, (outs), (ins GPROpnd:$rd),
-                     "brr 0x1 $rd", []>;
-  def BRRle : F_BRANCH<0b1, 0b100, (outs), (ins GPROpnd:$rd),
-                     "brr 0x4 $rd", []>;
+  def BRCne : F_BRANCH<0b0, 0b101, (outs), (ins GPROpnd:$rd),
+                     "brc 0x5 $rd", []>;
+  def BRCgt : F_BRANCH<0b0, 0b010, (outs), (ins GPROpnd:$rd),
+                     "brc 0x2 $rd", []>;
+  def BRCge : F_BRANCH<0b0, 0b011, (outs), (ins GPROpnd:$rd),
+                     "brc 0x3 $rd", []>;
+  def BRClt : F_BRANCH<0b0, 0b001, (outs), (ins GPROpnd:$rd),
+                     "brc 0x1 $rd", []>;
+  def BRCle : F_BRANCH<0b0, 0b100, (outs), (ins GPROpnd:$rd),
+                     "brc 0x4 $rd", []>;
 }
 
 def CCSIOp : PatLeaf<(cond), [{
@@ -719,17 +738,6 @@ def ADJCALLSTACKUP   : InstSAYAC<(outs), (ins i16imm:$amt1, i16imm:$amt2),
 
 // // Extracting immediate operands from nodes.
 
-// // Bits 0-15.
-// def LO16 : SDNodeXForm<imm, [{
-//   uint32_t Value = N->getZExtValue() & 0x000000000000FFFFULL;
-//   return CurDAG->getTargetConstant(Value, SDLoc(N), MVT::i32);
-// }]>;
-
-// // Bits 16-31 (counting from the lsb).
-// def HI16 : SDNodeXForm<imm, [{
-//   uint64_t Value = (N->getZExtValue() & 0x00000000FFFF0000ULL) >> 16;
-//   return CurDAG->getTargetConstant(Value, SDLoc(N), MVT::i32);
-// }]>;
 
 
 // // Immediates for the lower and upper 16 bits of an i32, with the other

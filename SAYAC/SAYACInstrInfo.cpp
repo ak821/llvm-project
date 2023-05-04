@@ -179,18 +179,23 @@ bool SAYACInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   }
   case SAYAC::ORrr:
   {
+    /*NOTE:
+    if registers other than dest Registers are modified in an instruction, that leads to error
+    in some instructions, destReg = srcReg may lead to error
+    */
     DebugLoc DL = MI.getDebugLoc();
     MachineBasicBlock &MBB = *MI.getParent();
 
     const unsigned destReg = MI.getOperand(0).getReg();
-    const unsigned src1 = MI.getOperand(1).getReg();
-    const unsigned src2 = MI.getOperand(2).getReg();
+    const unsigned destReg2 = MI.getOperand(1).getReg();
+    const unsigned src1 = MI.getOperand(2).getReg();
+    const unsigned src2 = MI.getOperand(3).getReg();
 
-    BuildMI(MBB, MI, DL, get(SAYAC::NTD2c), src1).addReg(src1);
-    BuildMI(MBB, MI, DL, get(SAYAC::NTD2c), src2).addReg(src2);
+    BuildMI(MBB, MI, DL, get(SAYAC::NTD2c), src1).addReg(src1); // src1 = destReg2 , hence we can modify
+    BuildMI(MBB, MI, DL, get(SAYAC::NTR2c), destReg).addReg(src2);
     BuildMI(MBB, MI, DL, get(SAYAC::ANDrr), destReg)
         .addReg(src1)
-        .addReg(src2);
+        .addReg(destReg);
     BuildMI(MBB, MI, DL, get(SAYAC::NTD2c), destReg).addReg(destReg);
 
     MBB.erase(MI);
@@ -202,9 +207,10 @@ bool SAYACInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     DebugLoc DL = MI.getDebugLoc();
     MachineBasicBlock &MBB = *MI.getParent();
 
-    const unsigned destReg = MI.getOperand(0).getReg();
-    const unsigned src1 = MI.getOperand(1).getReg();
-    const unsigned src2 = MI.getOperand(2).getReg();
+    unsigned destReg = MI.getOperand(0).getReg();
+    unsigned destReg2 = MI.getOperand(1).getReg();
+    const unsigned src1 = MI.getOperand(2).getReg();
+    const unsigned src2 = MI.getOperand(3).getReg();
 
     // addition overflow can lead to wrong result
     BuildMI(MBB, MI, DL, get(SAYAC::ADDrr), destReg)
@@ -215,7 +221,7 @@ bool SAYACInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
         .addReg(src2);
     BuildMI(MBB, MI, DL, get(SAYAC::SHIl), src1)
         .addReg(src1)
-        .addImm(1);
+        .addImm(-1);
     BuildMI(MBB, MI, DL, get(SAYAC::SUBrr), destReg)
         .addReg(destReg)
         .addReg(src1);
@@ -673,43 +679,43 @@ bool SAYACInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     return true;
   }
   case SAYAC::CBeq:{
-    expandBranch(MI, SAYAC::BRReq, false);
+    expandBranch(MI, SAYAC::BRCeq, false);
     return true;
   }
   case SAYAC::CBne:{
-    expandBranch(MI, SAYAC::BRRne, false);
+    expandBranch(MI, SAYAC::BRCne, false);
     return true;
   }
   case SAYAC::CBugt:{
-    expandBranch(MI, SAYAC::BRRgt, true);
+    expandBranch(MI, SAYAC::BRCgt, true);
     return true;
   }
   case SAYAC::CBuge:{
-    expandBranch(MI, SAYAC::BRRge, true);
+    expandBranch(MI, SAYAC::BRCge, true);
     return true;
   }
   case SAYAC::CBult:{
-    expandBranch(MI, SAYAC::BRRlt, true);
+    expandBranch(MI, SAYAC::BRClt, true);
     return true;
   }
   case SAYAC::CBule:{
-    expandBranch(MI, SAYAC::BRRle, true);
+    expandBranch(MI, SAYAC::BRCle, true);
     return true;
   }
   case SAYAC::CBgt:{
-    expandBranch(MI, SAYAC::BRRgt, false);
+    expandBranch(MI, SAYAC::BRCgt, false);
     return true;
   }
   case SAYAC::CBge:{
-    expandBranch(MI, SAYAC::BRRge, false);
+    expandBranch(MI, SAYAC::BRCge, false);
     return true;
   }
   case SAYAC::CBlt:{
-    expandBranch(MI, SAYAC::BRRlt, false);
+    expandBranch(MI, SAYAC::BRClt, false);
     return true;
   }
   case SAYAC::CBle:{
-    expandBranch(MI, SAYAC::BRRle, false);
+    expandBranch(MI, SAYAC::BRCle, false);
     return true;
   }
 
@@ -732,7 +738,7 @@ bool SAYACInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
         // Register ScratchReg = MRI.createVirtualRegister(&SAYAC::GPRRegClass);
         // TII->movImm(MBB, MI, DL, ScratchReg, branch_offset);
 
-        // BuildMI(MBB, MI, DL, get(SAYAC::BRRne)).addReg(ScratchReg);
+        // BuildMI(MBB, MI, DL, get(SAYAC::BRne)).addReg(ScratchReg);
 
         // MBB.erase(MI);
         // return true;
